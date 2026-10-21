@@ -28,6 +28,7 @@ struct LookupData {
 pub fn check(
     token_file: &Path,
     addr: Option<&str>,
+    program: &Path,
     timeout: Duration,
     now: DateTime<Utc>,
 ) -> Status {
@@ -43,7 +44,7 @@ pub fn check(
         return Status::locked(format!("token file {} is empty", token_file.display()));
     }
 
-    let mut command = Command::new("vault");
+    let mut command = Command::new(program);
     command
         .args(["token", "lookup", "-format=json"])
         .env("VAULT_TOKEN", token);
@@ -58,7 +59,7 @@ pub fn check(
         Ok(out) => {
             Status::unknown(cmd::first_line(&out.stderr).unwrap_or("vault token lookup failed"))
         }
-        Err(err) => Status::unknown(cmd::describe_error("vault", &err)),
+        Err(err) => Status::unknown(cmd::describe_error(program, &err)),
     }
 }
 
@@ -123,6 +124,7 @@ mod tests {
         let status = check(
             Path::new("/nonexistent/.vault-token"),
             None,
+            Path::new("vault"),
             Duration::from_secs(1),
             now(),
         );

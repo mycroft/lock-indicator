@@ -24,6 +24,7 @@ pub struct Config {
     pub separator: Option<String>,
     pub icons: ByState,
     pub colors: ByState,
+    pub programs: Programs,
     gpg: Vec<GpgEntry>,
     aws: Vec<AwsEntry>,
     gcloud: Vec<GcloudEntry>,
@@ -39,11 +40,24 @@ pub struct ByState {
     pub partial: Option<String>,
 }
 
+/// Paths or names of the external programs, when the default names in `PATH`
+/// don't fit.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Programs {
+    pub gpg: Option<String>,
+    pub gpg_connect_agent: Option<String>,
+    pub gcloud: Option<String>,
+    pub vault: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GpgEntry {
     key: String,
     label: Option<String>,
+    #[serde(default)]
+    optional: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +65,8 @@ struct GpgEntry {
 struct AwsEntry {
     profile: String,
     label: Option<String>,
+    #[serde(default)]
+    optional: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +74,8 @@ struct AwsEntry {
 struct GcloudEntry {
     account: String,
     label: Option<String>,
+    #[serde(default)]
+    optional: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,32 +84,38 @@ struct VaultEntry {
     token_file: String,
     addr: Option<String>,
     label: Option<String>,
+    #[serde(default)]
+    optional: bool,
 }
 
 impl Config {
     /// The checks defined in the file, grouped by kind like on the command line.
     pub fn checks(&self) -> Vec<(Kind, Spec)> {
-        let spec = |value: &str, label: &Option<String>, addr: Option<&String>| Spec {
+        let spec = |value: &str, label: &Option<String>, optional: bool| Spec {
             value: value.to_string(),
             label: label.clone(),
-            addr: addr.cloned(),
+            optional,
+            ..Spec::default()
         };
         let gpg = self
             .gpg
             .iter()
-            .map(|e| (Kind::Gpg, spec(&e.key, &e.label, None)));
+            .map(|e| (Kind::Gpg, spec(&e.key, &e.label, e.optional)));
         let aws = self
             .aws
             .iter()
-            .map(|e| (Kind::Aws, spec(&e.profile, &e.label, None)));
+            .map(|e| (Kind::Aws, spec(&e.profile, &e.label, e.optional)));
         let gcloud = self
             .gcloud
             .iter()
-            .map(|e| (Kind::Gcloud, spec(&e.account, &e.label, None)));
-        let vault = self
-            .vault
-            .iter()
-            .map(|e| (Kind::Vault, spec(&e.token_file, &e.label, e.addr.as_ref())));
+            .map(|e| (Kind::Gcloud, spec(&e.account, &e.label, e.optional)));
+        let vault = self.vault.iter().map(|e| {
+            let spec = Spec {
+                addr: e.addr.clone(),
+                ..spec(&e.token_file, &e.label, e.optional)
+            };
+            (Kind::Vault, spec)
+        });
         gpg.chain(aws).chain(gcloud).chain(vault).collect()
     }
 }
@@ -143,6 +167,10 @@ partial = "P"
 [colors]
 partial = "orange"
 
+[programs]
+vault = "~/.nix-profile/bin/vault"
+gpg_connect_agent = "/usr/bin/gpg-connect-agent"
+
 [[gpg]]
 key = "0xA629E94B9C4B2A03"
 label = "work"
@@ -157,6 +185,11 @@ label = "sandbox"
 [[gcloud]]
 account = "me@example.com"
 
+[[gcloud]]
+account = "me@gmail.com"
+label = "perso"
+optional = true
+
 [[vault]]
 token_file = "~/.vault-token"
 addr = "https://vault.example.com:8200"
@@ -168,6 +201,7 @@ label = "prod"
             value: value.into(),
             label: label.map(Into::into),
             addr: addr.map(Into::into),
+            optional: false,
         }
     }
 
@@ -192,12 +226,28 @@ label = "prod"
         assert_eq!(config.colors.partial.as_deref(), Some("orange"));
         assert_eq!(config.colors.unlocked, None);
         assert_eq!(
+            config.programs.vault.as_deref(),
+            Some("~/.nix-profile/bin/vault")
+        );
+        assert_eq!(
+            config.programs.gpg_connect_agent.as_deref(),
+            Some("/usr/bin/gpg-connect-agent")
+        );
+        assert_eq!(config.programs.gcloud, None);
+        assert_eq!(
             config.checks(),
             vec![
                 (Kind::Gpg, spec("0xA629E94B9C4B2A03", Some("work"), None)),
                 (Kind::Aws, spec("main", None, None)),
                 (Kind::Aws, spec("sbx", Some("sandbox"), None)),
                 (Kind::Gcloud, spec("me@example.com", None, None)),
+                (
+                    Kind::Gcloud,
+                    Spec {
+                        optional: true,
+                        ..spec("me@gmail.com", Some("perso"), None)
+                    }
+                ),
                 (
                     Kind::Vault,
                     spec(
@@ -221,6 +271,7 @@ label = "prod"
     fn rejects_typos_and_invalid_values() {
         assert!(toml::from_str::<Config>("formt = \"json\"").is_err());
         assert!(toml::from_str::<Config>("[colors]\nlocked = 1").is_err());
+        assert!(toml::from_str::<Config>("[programs]\nbao = \"bao\"").is_err());
         assert!(toml::from_str::<Config>("[colors]\nexpired = \"red\"").is_err());
         assert!(toml::from_str::<Config>("format = \"yaml\"").is_err());
         assert!(toml::from_str::<Config>("[[aws]]\nname = \"main\"").is_err());

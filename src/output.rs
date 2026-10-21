@@ -166,13 +166,17 @@ impl Counts {
     }
 }
 
+/// The checks that make up the text and the overall state: all but the optional ones.
+fn counted(outcomes: &[Outcome]) -> impl Iterator<Item = &Outcome> + Clone {
+    outcomes.iter().filter(|o| !o.check.optional)
+}
+
 fn text(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -> String {
-    let items = outcomes
-        .iter()
+    let items = counted(outcomes)
         .map(|outcome| item(outcome, style, now, markup))
         .collect::<Vec<_>>()
         .join(&style.separator);
-    let of_kind = |kind| Counts::of(outcomes.iter().filter(move |o| o.check.kind == kind));
+    let of_kind = |kind| Counts::of(counted(outcomes).filter(move |o| o.check.kind == kind));
     let kinds = Kind::ALL
         .into_iter()
         .filter_map(|kind| {
@@ -185,7 +189,7 @@ fn text(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -
         })
         .collect::<Vec<_>>()
         .join(&style.separator);
-    let counts = Counts::of(outcomes);
+    let counts = Counts::of(counted(outcomes));
     render_template(&style.text_format, |name| match name {
         "items" => Some(items.clone()),
         "kinds" => Some(kinds.clone()),
@@ -222,11 +226,12 @@ fn tooltip(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool
         .map(|outcome| {
             let (check, status) = (&outcome.check, &outcome.status);
             let mut line = format!(
-                "{} {}:{} — {}",
+                "{} {}:{} — {}{}",
                 style.icons.get(status.state),
                 check.kind.as_str(),
                 escape(&check.label, markup),
-                status.state.as_str()
+                status.state.as_str(),
+                if check.optional { " (optional)" } else { "" }
             );
             if let (Some(left), Some(at)) = (remaining(outcome, now), status.expires_at) {
                 let at = at.with_timezone(&Local).format("%Y-%m-%d %H:%M");
@@ -254,6 +259,8 @@ fn json(outcomes: &[Outcome], now: DateTime<Utc>) -> String {
         label: &'a str,
         target: &'a str,
         state: &'static str,
+        /// Left out of the overall state.
+        optional: bool,
         detail: Option<&'a str>,
         expires_at: Option<String>,
         /// Seconds until expiry, negative once expired.
@@ -261,7 +268,7 @@ fn json(outcomes: &[Outcome], now: DateTime<Utc>) -> String {
     }
 
     let report = Report {
-        state: Counts::of(outcomes).summary().as_str(),
+        state: Counts::of(counted(outcomes)).summary().as_str(),
         checks: outcomes
             .iter()
             .map(|Outcome { check, status }| Check {
@@ -269,6 +276,7 @@ fn json(outcomes: &[Outcome], now: DateTime<Utc>) -> String {
                 label: &check.label,
                 target: &check.target,
                 state: status.state.as_str(),
+                optional: check.optional,
                 detail: status.detail.as_deref(),
                 expires_at: status.expires_at.map(|at| at.to_rfc3339()),
                 expires_in: status.expires_at.map(|at| (at - now).num_seconds()),
@@ -289,7 +297,7 @@ fn waybar(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>) -> String {
         percentage: usize,
     }
 
-    let counts = Counts::of(outcomes);
+    let counts = Counts::of(counted(outcomes));
     let summary = counts.summary().as_str();
     let module = Module {
         text: text(outcomes, style, now, true),
@@ -360,8 +368,7 @@ mod tests {
     fn outcome(kind: Kind, label: &str, status: Status) -> Outcome {
         let spec = Spec {
             value: label.into(),
-            label: None,
-            addr: None,
+            ..Spec::default()
         };
         Outcome {
             check: Check::new(kind, spec),
@@ -480,6 +487,38 @@ mod tests {
             text(&outcomes, &style, now(), false),
             "aws:orange gpg:green gcp:grey vault:red P partial 1/2 unknown {nope.color} {aws.nope}"
         );
+    }
+
+    #[test]
+    fn optional_checks_are_only_reported() {
+        let mut outcomes = vec![
+            outcome(Kind::Gcloud, "work", Status::unlocked()),
+            outcome(Kind::Gcloud, "perso", Status::locked("no credentials")),
+            outcome(Kind::Aws, "main", Status::locked("expired")),
+        ];
+        outcomes[1].check.optional = true;
+        let mut style = style("{icon} {label}");
+        style.text_format = "{items} | {kinds} | {gcloud.state} {unlocked}/{total} {state}".into();
+        assert_eq!(
+            text(&outcomes, &style, now(), false),
+            "U work L main | L aws U gcloud | unlocked 1/2 partial"
+        );
+
+        let module: serde_json::Value =
+            serde_json::from_str(&waybar(&outcomes, &style, now())).unwrap();
+        assert_eq!(module["class"], "partial");
+        assert_eq!(module["percentage"], 50);
+        assert_eq!(
+            module["tooltip"],
+            "U gcloud:work — unlocked\n\
+             L gcloud:perso — locked (optional): no credentials\n\
+             L aws:main — locked: expired"
+        );
+
+        let report: serde_json::Value = serde_json::from_str(&json(&outcomes, now())).unwrap();
+        assert_eq!(report["state"], "partial");
+        assert_eq!(report["checks"][1]["optional"], true);
+        assert_eq!(report["checks"][1]["state"], "locked");
     }
 
     #[test]

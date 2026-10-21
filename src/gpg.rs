@@ -5,6 +5,7 @@
 //! The key counts as unlocked when any of its (sub)keys is cached.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -25,9 +26,9 @@ struct KeyInfo {
     cached: bool,
 }
 
-pub fn check(key: &str, timeout: Duration) -> Status {
+pub fn check(key: &str, gpg: &Path, connect_agent: &Path, timeout: Duration) -> Status {
     let listing = cmd::run(
-        Command::new("gpg").args([
+        Command::new(gpg).args([
             "--batch",
             "--with-colons",
             "--with-keygrip",
@@ -40,11 +41,11 @@ pub fn check(key: &str, timeout: Duration) -> Status {
     let keys = match listing {
         Ok(out) if out.status.success() => parse_secret_keys(&out.stdout),
         Ok(_) => return Status::unknown(format!("no secret key matching `{key}`")),
-        Err(err) => return Status::unknown(cmd::describe_error("gpg", &err)),
+        Err(err) => return Status::unknown(cmd::describe_error(gpg, &err)),
     };
 
     let agent = cmd::run(
-        Command::new("gpg-connect-agent").args(["--no-autostart", "KEYINFO --list", "/bye"]),
+        Command::new(connect_agent).args(["--no-autostart", "KEYINFO --list", "/bye"]),
         timeout,
     );
     match agent {
@@ -58,7 +59,7 @@ pub fn check(key: &str, timeout: Duration) -> Status {
         Ok(out) => {
             Status::unknown(cmd::first_line(&out.stderr).unwrap_or("unexpected gpg-agent response"))
         }
-        Err(err) => Status::unknown(cmd::describe_error("gpg-connect-agent", &err)),
+        Err(err) => Status::unknown(cmd::describe_error(connect_agent, &err)),
     }
 }
 

@@ -1,23 +1,25 @@
 //! Parsing of the `VALUE[,key=value...]` specifications given on the command line.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Spec {
     pub value: String,
     pub label: Option<String>,
     pub addr: Option<String>,
+    /// Checked and reported, but left out of the text and the overall state.
+    pub optional: bool,
 }
 
-/// Parses a spec accepting only the `label` option.
+/// Parses a spec accepting the `label` and `optional` options.
 pub fn parse_basic(s: &str) -> Result<Spec, String> {
-    parse(s, &["label"])
+    parse(s, false)
 }
 
-/// Parses a Vault token file spec, accepting the `label` and `addr` options.
+/// Parses a Vault token file spec, also accepting the `addr` option.
 pub fn parse_vault(s: &str) -> Result<Spec, String> {
-    parse(s, &["label", "addr"])
+    parse(s, true)
 }
 
-fn parse(s: &str, allowed: &[&str]) -> Result<Spec, String> {
+fn parse(s: &str, with_addr: bool) -> Result<Spec, String> {
     let mut parts = s.split(',');
     let value = parts.next().unwrap_or_default().trim();
     if value.is_empty() {
@@ -26,21 +28,26 @@ fn parse(s: &str, allowed: &[&str]) -> Result<Spec, String> {
 
     let mut spec = Spec {
         value: value.to_string(),
-        label: None,
-        addr: None,
+        ..Spec::default()
     };
     for option in parts {
-        let (key, val) = option
-            .split_once('=')
-            .ok_or_else(|| format!("invalid option `{option}`, expected key=value"))?;
-        let val = Some(val.trim().to_string());
-        match key.trim() {
-            "label" if allowed.contains(&"label") => spec.label = val,
-            "addr" if allowed.contains(&"addr") => spec.addr = val,
-            other => {
+        let (key, val) = match option.split_once('=') {
+            Some((key, val)) => (key.trim(), Some(val.trim())),
+            None => (option.trim(), None),
+        };
+        match (key, val) {
+            ("label", Some(label)) => spec.label = Some(label.to_string()),
+            ("addr", Some(addr)) if with_addr => spec.addr = Some(addr.to_string()),
+            ("optional", None | Some("true")) => spec.optional = true,
+            ("optional", Some("false")) => spec.optional = false,
+            _ => {
+                let supported = if with_addr {
+                    "label=NAME, addr=URL, optional"
+                } else {
+                    "label=NAME, optional"
+                };
                 return Err(format!(
-                    "unknown option `{other}` (supported: {})",
-                    allowed.join(", ")
+                    "invalid option `{option}` (supported: {supported})"
                 ));
             }
         }
@@ -74,6 +81,28 @@ mod tests {
         assert_eq!(spec.value, "~/.vault-token");
         assert_eq!(spec.addr.as_deref(), Some("https://vault.example.com:8200"));
         assert_eq!(spec.label.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn optional() {
+        assert!(parse_basic("perso@example.com,optional").unwrap().optional);
+        assert!(
+            parse_basic("perso@example.com,label=perso,optional=true")
+                .unwrap()
+                .optional
+        );
+        assert!(
+            !parse_basic("perso@example.com,optional=false")
+                .unwrap()
+                .optional
+        );
+        assert!(!parse_basic("perso@example.com").unwrap().optional);
+        assert!(
+            parse_vault("/tmp/token,optional,addr=http://x")
+                .unwrap()
+                .optional
+        );
+        assert!(parse_basic("perso@example.com,optional=maybe").is_err());
     }
 
     #[test]

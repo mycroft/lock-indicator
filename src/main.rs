@@ -16,14 +16,16 @@ use std::time::Duration;
 use chrono::Utc;
 use clap::Parser;
 
-use check::{Check, Kind, Outcome, Status};
+use check::{Check, Kind, Outcome, Programs, Status, expand_tilde};
 use config::Config;
 use output::{ByState, Format, Style};
 use spec::Spec;
 
 const DEFAULT_TIMEOUT: u64 = 10;
 
-const AFTER_HELP: &str = r#"Each check can be given several times. Checks run in parallel.
+const AFTER_HELP: &str = r#"Each check can be given several times. Checks run in parallel. An optional
+check is only reported in the tooltip and the JSON report: it is left out of the
+text and of the overall state.
 
 Checks and options can also be set in a TOML configuration file. Command-line
 options take precedence, and checks given on the command line replace the ones
@@ -52,19 +54,19 @@ struct Cli {
     config: Option<PathBuf>,
 
     /// GPG key (id, fingerprint or user id) whose passphrase must be cached in gpg-agent
-    #[arg(long, value_name = "KEY[,label=NAME]", value_parser = spec::parse_basic)]
+    #[arg(long, value_name = "KEY[,label=NAME][,optional]", value_parser = spec::parse_basic)]
     gpg: Vec<Spec>,
 
     /// AWS profile whose `aws sso login` token must not be expired
-    #[arg(long, value_name = "PROFILE[,label=NAME]", value_parser = spec::parse_basic)]
+    #[arg(long, value_name = "PROFILE[,label=NAME][,optional]", value_parser = spec::parse_basic)]
     aws: Vec<Spec>,
 
     /// gcloud account whose `gcloud auth login` credentials must still work
-    #[arg(long, value_name = "ACCOUNT[,label=NAME]", value_parser = spec::parse_basic)]
+    #[arg(long, value_name = "ACCOUNT[,label=NAME][,optional]", value_parser = spec::parse_basic)]
     gcloud: Vec<Spec>,
 
     /// Vault token file whose token must not be expired; the server defaults to $VAULT_ADDR
-    #[arg(long, value_name = "FILE[,addr=URL][,label=NAME]", value_parser = spec::parse_vault)]
+    #[arg(long, value_name = "FILE[,addr=URL][,label=NAME][,optional]", value_parser = spec::parse_vault)]
     vault: Vec<Spec>,
 
     /// Output format [default: text]
@@ -134,6 +136,7 @@ struct Settings {
     format: Format,
     timeout: Duration,
     style: Style,
+    programs: Programs,
 }
 
 fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
@@ -159,6 +162,10 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
     }
 
     let defaults = Style::default();
+    let default_programs = Programs::default();
+    let program = |configured: Option<String>, default| {
+        configured.map_or(default, |path| expand_tilde(&path))
+    };
     Ok(Settings {
         checks: checks
             .into_iter()
@@ -166,6 +173,15 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
             .collect(),
         format: pick(cli.format, config.format, Format::Text),
         timeout: Duration::from_secs(pick(cli.timeout, config.timeout, DEFAULT_TIMEOUT)),
+        programs: Programs {
+            gpg: program(config.programs.gpg, default_programs.gpg),
+            gpg_connect_agent: program(
+                config.programs.gpg_connect_agent,
+                default_programs.gpg_connect_agent,
+            ),
+            gcloud: program(config.programs.gcloud, default_programs.gcloud),
+            vault: program(config.programs.vault, default_programs.vault),
+        },
         style: Style {
             text_format: pick(cli.text_format, config.text_format, defaults.text_format),
             item_format: pick(cli.item_format, config.item_format, defaults.item_format),
@@ -233,7 +249,7 @@ fn main() {
         let handles: Vec<_> = settings
             .checks
             .iter()
-            .map(|check| scope.spawn(|| check.run(settings.timeout)))
+            .map(|check| scope.spawn(|| check.run(&settings.programs, settings.timeout)))
             .collect();
         handles
             .into_iter()
@@ -282,6 +298,9 @@ kind_format = "{kind}"
 locked = "L"
 [colors]
 partial = "orange"
+[programs]
+vault = "~/bin/vault"
+gcloud = "/opt/google-cloud-sdk/bin/gcloud"
 [[aws]]
 profile = "main"
 [[gpg]]
@@ -305,6 +324,14 @@ label = "work"
         assert_eq!(settings.style.colors.partial, "orange");
         assert_eq!(settings.style.colors.locked, "#e06c75");
         assert_eq!(settings.timeout, Duration::from_secs(DEFAULT_TIMEOUT));
+        assert_eq!(
+            settings.programs,
+            Programs {
+                vault: check::home_dir().join("bin/vault"),
+                gcloud: "/opt/google-cloud-sdk/bin/gcloud".into(),
+                ..Programs::default()
+            }
+        );
     }
 
     #[test]

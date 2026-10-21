@@ -98,6 +98,8 @@ pub struct Check {
     pub target: String,
     /// Vault server address.
     pub addr: Option<String>,
+    /// Checked and reported, but left out of the text and the overall state.
+    pub optional: bool,
 }
 
 impl Check {
@@ -114,20 +116,47 @@ impl Check {
             label,
             target,
             addr: spec.addr,
+            optional: spec.optional,
         }
     }
 
-    pub fn run(&self, timeout: Duration) -> Status {
+    pub fn run(&self, programs: &Programs, timeout: Duration) -> Status {
         match self.kind {
-            Kind::Gpg => gpg::check(&self.target, timeout),
+            Kind::Gpg => gpg::check(
+                &self.target,
+                &programs.gpg,
+                &programs.gpg_connect_agent,
+                timeout,
+            ),
             Kind::Aws => aws::check(&self.target, Utc::now()),
-            Kind::Gcloud => gcloud::check(&self.target, timeout),
+            Kind::Gcloud => gcloud::check(&self.target, &programs.gcloud, timeout),
             Kind::Vault => vault::check(
                 Path::new(&self.target),
                 self.addr.as_deref(),
+                &programs.vault,
                 timeout,
                 Utc::now(),
             ),
+        }
+    }
+}
+
+/// External programs run by the checks: paths, or names looked up in `PATH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Programs {
+    pub gpg: PathBuf,
+    pub gpg_connect_agent: PathBuf,
+    pub gcloud: PathBuf,
+    pub vault: PathBuf,
+}
+
+impl Default for Programs {
+    fn default() -> Self {
+        Programs {
+            gpg: "gpg".into(),
+            gpg_connect_agent: "gpg-connect-agent".into(),
+            gcloud: "gcloud".into(),
+            vault: "vault".into(),
         }
     }
 }
@@ -170,7 +199,7 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
+pub fn expand_tilde(path: &str) -> PathBuf {
     match path.strip_prefix("~") {
         Some("") => home_dir(),
         Some(rest) if rest.starts_with('/') => home_dir().join(&rest[1..]),
@@ -236,8 +265,8 @@ mod tests {
     fn labels() {
         let spec = |value: &str, addr: Option<&str>| Spec {
             value: value.into(),
-            label: None,
             addr: addr.map(Into::into),
+            ..Spec::default()
         };
         assert_eq!(Check::new(Kind::Aws, spec("main", None)).label, "main");
         assert_eq!(

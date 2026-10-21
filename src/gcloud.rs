@@ -4,6 +4,7 @@
 //! working when the session is revoked or reauthentication is required. The only
 //! reliable check is to ask gcloud for an access token, refreshing it if needed.
 
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -21,8 +22,8 @@ const NETWORK_ERRORS: &[&str] = &[
     "TransportError",
 ];
 
-pub fn check(account: &str, timeout: Duration) -> Status {
-    let mut command = Command::new("gcloud");
+pub fn check(account: &str, program: &Path, timeout: Duration) -> Status {
+    let mut command = Command::new(program);
     command
         .args(["auth", "print-access-token", "--quiet", "--verbosity=error"])
         .arg(format!("--account={account}"))
@@ -31,7 +32,7 @@ pub fn check(account: &str, timeout: Duration) -> Status {
         // stdout holds the access token: it is deliberately discarded.
         Ok(out) if out.status.success() => Status::unlocked(),
         Ok(out) => classify_failure(&out.stderr),
-        Err(err) => Status::unknown(cmd::describe_error("gcloud", &err)),
+        Err(err) => Status::unknown(cmd::describe_error(program, &err)),
     }
 }
 

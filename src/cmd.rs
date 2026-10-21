@@ -1,6 +1,7 @@
 //! Running external commands with a timeout.
 
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -54,9 +55,12 @@ pub fn run(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
 }
 
 /// Describes a failure to run `program` for display in a check's detail.
-pub fn describe_error(program: &str, err: &io::Error) -> String {
+pub fn describe_error(program: &Path, err: &io::Error) -> String {
+    let in_path = program.components().count() == 1;
+    let program = program.display();
     match err.kind() {
-        io::ErrorKind::NotFound => format!("`{program}` not found in PATH"),
+        io::ErrorKind::NotFound if in_path => format!("`{program}` not found in PATH"),
+        io::ErrorKind::NotFound => format!("`{program}` not found"),
         io::ErrorKind::TimedOut => format!("`{program}` {err}"),
         _ => format!("failed to run `{program}`: {err}"),
     }
@@ -110,6 +114,13 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap_err();
-        assert_eq!(describe_error("x", &err), "`x` not found in PATH");
+        assert_eq!(
+            describe_error(Path::new("x"), &err),
+            "`x` not found in PATH"
+        );
+        assert_eq!(
+            describe_error(Path::new("/opt/x"), &err),
+            "`/opt/x` not found"
+        );
     }
 }

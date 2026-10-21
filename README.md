@@ -32,6 +32,10 @@ runs once and exits; the status bar decides how often to call it.
 | `--gcloud` | The `gcloud` CLI in `PATH` |
 | `--vault` | The `vault` CLI in `PATH`, and the address of the Vault server |
 
+When a tool is not in `PATH`, which can happen when waybar starts with a
+minimal environment, set its location in the [`[programs]`](#configuration-file)
+table of the configuration file.
+
 ### Installation
 
 ```sh
@@ -49,13 +53,20 @@ takes a value and optional comma-separated options:
 
 | Option | Value | Options |
 |--------|-------|---------|
-| `--gpg` | key id, fingerprint or user id | `label=NAME` |
-| `--aws` | profile name | `label=NAME` |
-| `--gcloud` | account (e-mail) | `label=NAME` |
-| `--vault` | token file | `label=NAME`, `addr=URL` (defaults to `$VAULT_ADDR`) |
+| `--gpg` | key id, fingerprint or user id | `label=NAME`, `optional` |
+| `--aws` | profile name | `label=NAME`, `optional` |
+| `--gcloud` | account (e-mail) | `label=NAME`, `optional` |
+| `--vault` | token file | `label=NAME`, `addr=URL` (defaults to `$VAULT_ADDR`), `optional` |
 
 The label is what appears in the output. It defaults to the value itself; for
 Vault it defaults to the server's host, or the file name when no `addr` is set.
+
+An `optional` check is still run and reported in the waybar tooltip and the JSON
+report, but it is left out of the text and of the overall state: `{items}`,
+`{kinds}`, the per-kind placeholders, the counts, and waybar's `alt`, `class` and
+`percentage`. Use it for credentials you don't always keep unlocked, such as a
+personal gcloud account next to a work one: the bar stays green while the
+tooltip still shows it.
 
 ```sh
 lock-indicator \
@@ -158,6 +169,7 @@ configuration file. Any Pango color works, such as `orange` or `#ffa500`.
       "label": "main",
       "target": "main",
       "state": "unlocked",
+      "optional": false,
       "detail": null,
       "expires_at": "2026-10-21T18:05:09+00:00",
       "expires_in": 11100
@@ -203,7 +215,7 @@ partial = "#d19a66"
 
 [[gpg]]
 key = "0xA629E94B9C4B2A03"
-label = "work"           # optional, like for every check
+label = "work"           # every check can have a label
 
 [[aws]]
 profile = "main"
@@ -215,9 +227,25 @@ label = "sandbox"
 [[gcloud]]
 account = "me@example.com"
 
+[[gcloud]]
+account = "me@gmail.com"
+label = "perso"
+optional = true          # reported in the tooltip, left out of the text and state
+
 [[vault]]
 token_file = "~/.vault-token"
 addr = "https://vault.example.com:8200"   # optional, defaults to $VAULT_ADDR
+```
+
+The `[programs]` table sets where the external programs are, as a path (`~`
+is expanded) or a name looked up in `PATH`. Each one defaults to its own name:
+
+```toml
+[programs]
+gpg = "gpg"
+gpg_connect_agent = "gpg-connect-agent"
+gcloud = "gcloud"
+vault = "~/.nix-profile/bin/vault"
 ```
 
 How the file and the command line combine:
