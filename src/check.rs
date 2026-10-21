@@ -17,6 +17,8 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub const ALL: [Kind; 4] = [Kind::Gpg, Kind::Aws, Kind::Gcloud, Kind::Vault];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Gpg => "gpg",

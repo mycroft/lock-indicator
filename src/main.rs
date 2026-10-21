@@ -18,7 +18,7 @@ use clap::Parser;
 
 use check::{Check, Kind, Outcome, Status};
 use config::Config;
-use output::{Format, Icons, Style};
+use output::{ByState, Format, Style};
 use spec::Spec;
 
 const DEFAULT_TIMEOUT: u64 = 10;
@@ -71,17 +71,23 @@ struct Cli {
     #[arg(short, long, value_enum)]
     format: Option<Format>,
 
-    /// Template of the whole text; placeholders: {items}, {icon}, {state}, {unlocked}, {locked},
-    /// {unknown}, {total} [default: "{items}"]
+    /// Template of the whole text; placeholders: {items}, {kinds}, {icon}, {color}, {state},
+    /// {unlocked}, {locked}, {unknown}, {total}, and the same for one kind, e.g. {aws.color}
+    /// [default: "{items}"]
     #[arg(long, value_name = "TEMPLATE")]
     text_format: Option<String>,
 
-    /// Template of each check in {items}; placeholders: {icon}, {kind}, {label}, {state},
-    /// {expires} [default: "{icon} {kind}:{label}"]
+    /// Template of each check in {items}; placeholders: {icon}, {color}, {kind}, {label},
+    /// {state}, {expires} [default: "{icon} {kind}:{label}"]
     #[arg(long, value_name = "TEMPLATE")]
     item_format: Option<String>,
 
-    /// Separator between checks in {items} [default: " "]
+    /// Template of each kind of check in {kinds}; placeholders: {kind}, {icon}, {color}, {state},
+    /// {unlocked}, {locked}, {unknown}, {total} [default: "{icon} {kind}"]
+    #[arg(long, value_name = "TEMPLATE")]
+    kind_format: Option<String>,
+
+    /// Separator between the entries of {items} and {kinds} [default: " "]
     #[arg(long, value_name = "STRING")]
     separator: Option<String>,
 
@@ -97,9 +103,25 @@ struct Cli {
     #[arg(long, value_name = "ICON")]
     icon_unknown: Option<String>,
 
-    /// Overall {icon} in --text-format when only some checks are unlocked [default: 🔐]
+    /// Icon of a group of checks of which only some are unlocked [default: 🔐]
     #[arg(long, value_name = "ICON")]
     icon_partial: Option<String>,
+
+    /// {color} of unlocked checks [default: #98c379]
+    #[arg(long, value_name = "COLOR")]
+    color_unlocked: Option<String>,
+
+    /// {color} of locked checks [default: #e06c75]
+    #[arg(long, value_name = "COLOR")]
+    color_locked: Option<String>,
+
+    /// {color} of checks in an unknown state [default: #888888]
+    #[arg(long, value_name = "COLOR")]
+    color_unknown: Option<String>,
+
+    /// {color} of a group of checks of which only some are unlocked [default: #d19a66]
+    #[arg(long, value_name = "COLOR")]
+    color_partial: Option<String>,
 
     /// Timeout of each external command (gpg, gcloud, vault) [default: 10]
     #[arg(long, value_name = "SECONDS")]
@@ -142,41 +164,60 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
             .into_iter()
             .map(|(kind, spec)| Check::new(kind, spec))
             .collect(),
-        format: cli.format.or(config.format).unwrap_or(Format::Text),
-        timeout: Duration::from_secs(cli.timeout.or(config.timeout).unwrap_or(DEFAULT_TIMEOUT)),
+        format: pick(cli.format, config.format, Format::Text),
+        timeout: Duration::from_secs(pick(cli.timeout, config.timeout, DEFAULT_TIMEOUT)),
         style: Style {
-            text_format: cli
-                .text_format
-                .or(config.text_format)
-                .unwrap_or(defaults.text_format),
-            item_format: cli
-                .item_format
-                .or(config.item_format)
-                .unwrap_or(defaults.item_format),
-            separator: cli
-                .separator
-                .or(config.separator)
-                .unwrap_or(defaults.separator),
-            icons: Icons {
-                unlocked: cli
-                    .icon_unlocked
-                    .or(config.icons.unlocked)
-                    .unwrap_or(defaults.icons.unlocked),
-                locked: cli
-                    .icon_locked
-                    .or(config.icons.locked)
-                    .unwrap_or(defaults.icons.locked),
-                unknown: cli
-                    .icon_unknown
-                    .or(config.icons.unknown)
-                    .unwrap_or(defaults.icons.unknown),
-                partial: cli
-                    .icon_partial
-                    .or(config.icons.partial)
-                    .unwrap_or(defaults.icons.partial),
+            text_format: pick(cli.text_format, config.text_format, defaults.text_format),
+            item_format: pick(cli.item_format, config.item_format, defaults.item_format),
+            kind_format: pick(cli.kind_format, config.kind_format, defaults.kind_format),
+            separator: pick(cli.separator, config.separator, defaults.separator),
+            icons: ByState {
+                unlocked: pick(
+                    cli.icon_unlocked,
+                    config.icons.unlocked,
+                    defaults.icons.unlocked,
+                ),
+                locked: pick(cli.icon_locked, config.icons.locked, defaults.icons.locked),
+                unknown: pick(
+                    cli.icon_unknown,
+                    config.icons.unknown,
+                    defaults.icons.unknown,
+                ),
+                partial: pick(
+                    cli.icon_partial,
+                    config.icons.partial,
+                    defaults.icons.partial,
+                ),
+            },
+            colors: ByState {
+                unlocked: pick(
+                    cli.color_unlocked,
+                    config.colors.unlocked,
+                    defaults.colors.unlocked,
+                ),
+                locked: pick(
+                    cli.color_locked,
+                    config.colors.locked,
+                    defaults.colors.locked,
+                ),
+                unknown: pick(
+                    cli.color_unknown,
+                    config.colors.unknown,
+                    defaults.colors.unknown,
+                ),
+                partial: pick(
+                    cli.color_partial,
+                    config.colors.partial,
+                    defaults.colors.partial,
+                ),
             },
         },
     })
+}
+
+/// The command-line value, else the configuration file's, else the default.
+fn pick<T>(cli: Option<T>, config: Option<T>, default: T) -> T {
+    cli.or(config).unwrap_or(default)
 }
 
 fn main() {
@@ -236,8 +277,11 @@ mod tests {
     const CONFIG: &str = r#"
 format = "json"
 item_format = "{label}"
+kind_format = "{kind}"
 [icons]
 locked = "L"
+[colors]
+partial = "orange"
 [[aws]]
 profile = "main"
 [[gpg]]
@@ -257,6 +301,9 @@ label = "work"
         assert_eq!(settings.style.icons.locked, "L");
         assert_eq!(settings.style.icons.unlocked, "🔓");
         assert_eq!(settings.style.text_format, "{items}");
+        assert_eq!(settings.style.kind_format, "{kind}");
+        assert_eq!(settings.style.colors.partial, "orange");
+        assert_eq!(settings.style.colors.locked, "#e06c75");
         assert_eq!(settings.timeout, Duration::from_secs(DEFAULT_TIMEOUT));
     }
 
@@ -267,6 +314,8 @@ label = "work"
             "--format=waybar",
             "--item-format={icon}",
             "--icon-locked=X",
+            "--color-partial=yellow",
+            "--kind-format={icon}",
             "--timeout=3",
         ];
         let settings = resolve_with(&args, CONFIG).unwrap();
@@ -274,6 +323,8 @@ label = "work"
         assert_eq!(settings.format, Format::Waybar);
         assert_eq!(settings.style.item_format, "{icon}");
         assert_eq!(settings.style.icons.locked, "X");
+        assert_eq!(settings.style.colors.partial, "yellow");
+        assert_eq!(settings.style.kind_format, "{icon}");
         assert_eq!(settings.timeout, Duration::from_secs(3));
     }
 

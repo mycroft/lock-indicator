@@ -20,8 +20,10 @@ pub struct Config {
     pub timeout: Option<u64>,
     pub text_format: Option<String>,
     pub item_format: Option<String>,
+    pub kind_format: Option<String>,
     pub separator: Option<String>,
-    pub icons: Icons,
+    pub icons: ByState,
+    pub colors: ByState,
     gpg: Vec<GpgEntry>,
     aws: Vec<AwsEntry>,
     gcloud: Vec<GcloudEntry>,
@@ -30,7 +32,7 @@ pub struct Config {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Icons {
+pub struct ByState {
     pub unlocked: Option<String>,
     pub locked: Option<String>,
     pub unknown: Option<String>,
@@ -131,11 +133,15 @@ format = "waybar"
 timeout = 5
 text_format = "{icon} {unlocked}/{total}"
 item_format = "{icon} {label}"
+kind_format = "<span color='{color}'>{kind}</span>"
 separator = " | "
 
 [icons]
 unlocked = "U"
 partial = "P"
+
+[colors]
+partial = "orange"
 
 [[gpg]]
 key = "0xA629E94B9C4B2A03"
@@ -180,6 +186,12 @@ label = "prod"
         assert_eq!(config.icons.locked, None);
         assert_eq!(config.icons.partial.as_deref(), Some("P"));
         assert_eq!(
+            config.kind_format.as_deref(),
+            Some("<span color='{color}'>{kind}</span>")
+        );
+        assert_eq!(config.colors.partial.as_deref(), Some("orange"));
+        assert_eq!(config.colors.unlocked, None);
+        assert_eq!(
             config.checks(),
             vec![
                 (Kind::Gpg, spec("0xA629E94B9C4B2A03", Some("work"), None)),
@@ -208,6 +220,8 @@ label = "prod"
     #[test]
     fn rejects_typos_and_invalid_values() {
         assert!(toml::from_str::<Config>("formt = \"json\"").is_err());
+        assert!(toml::from_str::<Config>("[colors]\nlocked = 1").is_err());
+        assert!(toml::from_str::<Config>("[colors]\nexpired = \"red\"").is_err());
         assert!(toml::from_str::<Config>("format = \"yaml\"").is_err());
         assert!(toml::from_str::<Config>("[[aws]]\nname = \"main\"").is_err());
         assert!(toml::from_str::<Config>("[[gpg]]\nkey = \"x\"\naddr = \"y\"").is_err());

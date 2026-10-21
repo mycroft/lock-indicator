@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 
-use crate::check::{Outcome, State, human_duration};
+use crate::check::{Kind, Outcome, State, human_duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,12 +19,16 @@ pub enum Format {
 }
 
 pub struct Style {
-    /// Template of the whole text, where `{items}` are the rendered checks.
+    /// Template of the whole text, where `{items}` are the rendered checks and
+    /// `{kinds}` the rendered kinds.
     pub text_format: String,
     /// Template of each check in `{items}`.
     pub item_format: String,
+    /// Template of each kind of check in `{kinds}`.
+    pub kind_format: String,
     pub separator: String,
-    pub icons: Icons,
+    pub icons: ByState,
+    pub colors: ByState,
 }
 
 impl Default for Style {
@@ -32,26 +36,34 @@ impl Default for Style {
         Style {
             text_format: "{items}".into(),
             item_format: "{icon} {kind}:{label}".into(),
+            kind_format: "{icon} {kind}".into(),
             separator: " ".into(),
-            icons: Icons {
+            icons: ByState {
                 unlocked: "🔓".into(),
                 locked: "🔒".into(),
                 unknown: "❓".into(),
                 partial: "🔐".into(),
             },
+            colors: ByState {
+                unlocked: "#98c379".into(),
+                locked: "#e06c75".into(),
+                unknown: "#888888".into(),
+                partial: "#d19a66".into(),
+            },
         }
     }
 }
 
-pub struct Icons {
+/// A value, such as an icon or a color, for each state.
+pub struct ByState {
     pub unlocked: String,
     pub locked: String,
     pub unknown: String,
-    /// Overall icon when only some checks are unlocked.
+    /// Value for a group of checks of which only some are unlocked.
     pub partial: String,
 }
 
-impl Icons {
+impl ByState {
     fn get(&self, state: State) -> &str {
         match state {
             State::Unlocked => &self.unlocked,
@@ -70,7 +82,7 @@ impl Icons {
     }
 }
 
-/// Overall state of all checks.
+/// Overall state of a group of checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Summary {
     Unlocked,
@@ -98,21 +110,60 @@ pub fn render(format: Format, outcomes: &[Outcome], style: &Style, now: DateTime
     }
 }
 
-fn summary(outcomes: &[Outcome]) -> Summary {
-    let unlocked = count(outcomes, State::Unlocked);
-    if unlocked == outcomes.len() {
-        Summary::Unlocked
-    } else if unlocked > 0 {
-        Summary::Partial
-    } else if count(outcomes, State::Locked) > 0 {
-        Summary::Locked
-    } else {
-        Summary::Unknown
-    }
+/// Number of checks in each state, for all checks or the checks of one kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Counts {
+    unlocked: usize,
+    locked: usize,
+    unknown: usize,
 }
 
-fn count(outcomes: &[Outcome], state: State) -> usize {
-    outcomes.iter().filter(|o| o.status.state == state).count()
+impl Counts {
+    fn of<'a>(outcomes: impl IntoIterator<Item = &'a Outcome>) -> Self {
+        let mut counts = Counts::default();
+        for outcome in outcomes {
+            match outcome.status.state {
+                State::Unlocked => counts.unlocked += 1,
+                State::Locked => counts.locked += 1,
+                State::Unknown => counts.unknown += 1,
+            }
+        }
+        counts
+    }
+
+    fn total(self) -> usize {
+        self.unlocked + self.locked + self.unknown
+    }
+
+    fn summary(self) -> Summary {
+        if self.total() == 0 {
+            // A kind without any check, referenced as `{vault.color}` for instance.
+            Summary::Unknown
+        } else if self.unlocked == self.total() {
+            Summary::Unlocked
+        } else if self.unlocked > 0 {
+            Summary::Partial
+        } else if self.locked > 0 {
+            Summary::Locked
+        } else {
+            Summary::Unknown
+        }
+    }
+
+    /// Placeholders shared by --text-format and --kind-format.
+    fn placeholder(self, name: &str, style: &Style) -> Option<String> {
+        let summary = self.summary();
+        Some(match name {
+            "icon" => style.icons.overall(summary).to_string(),
+            "color" => style.colors.overall(summary).to_string(),
+            "state" => summary.as_str().to_string(),
+            "unlocked" => self.unlocked.to_string(),
+            "locked" => self.locked.to_string(),
+            "unknown" => self.unknown.to_string(),
+            "total" => self.total().to_string(),
+            _ => return None,
+        })
+    }
 }
 
 fn text(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -> String {
@@ -121,18 +172,31 @@ fn text(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -
         .map(|outcome| item(outcome, style, now, markup))
         .collect::<Vec<_>>()
         .join(&style.separator);
-    let summary = summary(outcomes);
-    render_template(&style.text_format, |name| {
-        Some(match name {
-            "items" => items.clone(),
-            "icon" => style.icons.overall(summary).to_string(),
-            "state" => summary.as_str().to_string(),
-            "unlocked" => count(outcomes, State::Unlocked).to_string(),
-            "locked" => count(outcomes, State::Locked).to_string(),
-            "unknown" => count(outcomes, State::Unknown).to_string(),
-            "total" => outcomes.len().to_string(),
-            _ => return None,
+    let of_kind = |kind| Counts::of(outcomes.iter().filter(move |o| o.check.kind == kind));
+    let kinds = Kind::ALL
+        .into_iter()
+        .filter_map(|kind| {
+            let counts = of_kind(kind);
+            let rendered = render_template(&style.kind_format, |name| match name {
+                "kind" => Some(kind.as_str().to_string()),
+                _ => counts.placeholder(name, style),
+            });
+            (counts.total() > 0).then_some(rendered)
         })
+        .collect::<Vec<_>>()
+        .join(&style.separator);
+    let counts = Counts::of(outcomes);
+    render_template(&style.text_format, |name| match name {
+        "items" => Some(items.clone()),
+        "kinds" => Some(kinds.clone()),
+        // `{aws.color}`, `{gpg.state}`...: a placeholder for the checks of one kind.
+        _ => match name.split_once('.') {
+            Some((kind, name)) => {
+                let kind = Kind::ALL.into_iter().find(|k| k.as_str() == kind)?;
+                of_kind(kind).placeholder(name, style)
+            }
+            None => counts.placeholder(name, style),
+        },
     })
 }
 
@@ -141,6 +205,7 @@ fn item(outcome: &Outcome, style: &Style, now: DateTime<Utc>, markup: bool) -> S
     render_template(&style.item_format, |name| {
         let value: Cow<str> = match name {
             "icon" => return Some(style.icons.get(status.state).to_string()),
+            "color" => return Some(style.colors.get(status.state).to_string()),
             "kind" => outcome.check.kind.as_str().into(),
             "label" => outcome.check.label.as_str().into(),
             "state" => status.state.as_str().into(),
@@ -196,7 +261,7 @@ fn json(outcomes: &[Outcome], now: DateTime<Utc>) -> String {
     }
 
     let report = Report {
-        state: summary(outcomes).as_str(),
+        state: Counts::of(outcomes).summary().as_str(),
         checks: outcomes
             .iter()
             .map(|Outcome { check, status }| Check {
@@ -224,14 +289,15 @@ fn waybar(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>) -> String {
         percentage: usize,
     }
 
-    let summary = summary(outcomes).as_str();
+    let counts = Counts::of(outcomes);
+    let summary = counts.summary().as_str();
     let module = Module {
         text: text(outcomes, style, now, true),
         tooltip: tooltip(outcomes, style, now, true),
         alt: summary,
         class: summary,
-        percentage: (count(outcomes, State::Unlocked) * 100)
-            .checked_div(outcomes.len())
+        percentage: (counts.unlocked * 100)
+            .checked_div(counts.total())
             .unwrap_or(0),
     };
     serde_json::to_string(&module).expect("module serialization cannot fail")
@@ -284,7 +350,7 @@ fn escape(s: &str, markup: bool) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::{Check, Kind, Status, parse_timestamp};
+    use crate::check::{Check, Status, parse_timestamp};
     use crate::spec::Spec;
 
     fn now() -> DateTime<Utc> {
@@ -307,12 +373,19 @@ mod tests {
         Style {
             text_format: "{items}".into(),
             item_format: item_format.into(),
+            kind_format: "{icon} {kind}".into(),
             separator: " ".into(),
-            icons: Icons {
+            icons: ByState {
                 unlocked: "U".into(),
                 locked: "L".into(),
                 unknown: "?".into(),
                 partial: "P".into(),
+            },
+            colors: ByState {
+                unlocked: "green".into(),
+                locked: "red".into(),
+                unknown: "grey".into(),
+                partial: "orange".into(),
             },
         }
     }
@@ -363,6 +436,7 @@ mod tests {
         let unlocked = |label| outcome(Kind::Aws, label, Status::unlocked());
         let locked = |label| outcome(Kind::Aws, label, Status::locked("x"));
         let unknown = |label| outcome(Kind::Aws, label, Status::unknown("x"));
+        let summary = |outcomes: &[Outcome]| Counts::of(outcomes).summary();
         assert_eq!(summary(&[unlocked("a"), unlocked("b")]), Summary::Unlocked);
         assert_eq!(summary(&[unlocked("a"), locked("b")]), Summary::Partial);
         assert_eq!(summary(&[unlocked("a"), unknown("b")]), Summary::Partial);
@@ -378,6 +452,54 @@ mod tests {
         assert_eq!(
             text(&sample(), &style, now(), false),
             "P 2/3 [work main prod] partial 1 0 {nope}"
+        );
+    }
+
+    #[test]
+    fn colors() {
+        let mut style = style("<span color='{color}'>{label}</span>");
+        style.text_format = "{color}: {items}".into();
+        assert_eq!(
+            text(&sample(), &style, now(), true),
+            "orange: <span color='green'>work</span> <span color='green'>main</span> \
+             <span color='red'>prod</span>"
+        );
+    }
+
+    #[test]
+    fn placeholders_of_one_kind() {
+        let mut outcomes = sample();
+        outcomes.push(outcome(Kind::Aws, "sbx", Status::locked("expired")));
+        let mut style = style("{label}");
+        style.text_format =
+            "aws:{aws.color} gpg:{gpg.color} gcp:{gcloud.color} vault:{vault.color} \
+                             {aws.icon} {aws.state} {aws.unlocked}/{aws.total} {gcloud.state} \
+                             {nope.color} {aws.nope}"
+                .into();
+        assert_eq!(
+            text(&outcomes, &style, now(), false),
+            "aws:orange gpg:green gcp:grey vault:red P partial 1/2 unknown {nope.color} {aws.nope}"
+        );
+    }
+
+    #[test]
+    fn kinds() {
+        let mut outcomes = sample();
+        outcomes.push(outcome(Kind::Aws, "sbx", Status::locked("expired")));
+        outcomes.push(outcome(Kind::Gcloud, "gcp", Status::unknown("offline")));
+        let mut style = style("{label}");
+        style.kind_format = "{kind}:<span color='{color}'>{icon}</span>".into();
+        style.text_format = "{kinds}".into();
+        assert_eq!(
+            text(&outcomes, &style, now(), true),
+            "gpg:<span color='green'>U</span> aws:<span color='orange'>P</span> \
+             gcloud:<span color='grey'>?</span> vault:<span color='red'>L</span>"
+        );
+        style.kind_format = "{kind} {unlocked}/{total} {state}".into();
+        style.separator = ", ".into();
+        assert_eq!(
+            text(&outcomes, &style, now(), false),
+            "gpg 1/1 unlocked, aws 1/2 partial, gcloud 0/1 unknown, vault 0/1 locked"
         );
     }
 

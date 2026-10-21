@@ -93,39 +93,59 @@ access token if needed, as any `gcloud` command would.
 
 Choose the format with `-f`/`--format`.
 
-**`text`** (default): one line, built from two templates. Each check is
-rendered with `--item-format` (default `{icon} {kind}:{label}`):
+**`text`** (default): one line, built from templates. The whole line is
+`--text-format` (default `{items}`):
+
+| Placeholder | Value |
+|-------------|-------|
+| `{items}` | every check, rendered with `--item-format` |
+| `{kinds}` | one entry per kind of check (`gpg`, `aws`, …), rendered with `--kind-format` |
+| `{icon}` | overall icon: the unlocked, locked or unknown icon, or `--icon-partial` (default 🔐) when only some checks are unlocked |
+| `{color}` | overall color, picked the same way from `--color-*` |
+| `{state}` | overall state: `unlocked`, `partial`, `locked` or `unknown` |
+| `{unlocked}`, `{locked}`, `{unknown}` | number of checks in that state |
+| `{total}` | number of checks |
+| `{gpg.color}`, `{aws.state}`, … | any of the above for the checks of one kind (`gpg`, `aws`, `gcloud` or `vault`) only; a kind without checks is `unknown` |
+
+Each check in `{items}` is rendered with `--item-format` (default
+`{icon} {kind}:{label}`):
 
 | Placeholder | Value |
 |-------------|-------|
 | `{icon}` | `--icon-unlocked`, `--icon-locked` or `--icon-unknown` (defaults: 🔓 🔒 ❓) |
+| `{color}` | `--color-unlocked`, `--color-locked` or `--color-unknown` |
 | `{kind}` | `gpg`, `aws`, `gcloud` or `vault` |
 | `{label}` | the check's label |
 | `{state}` | `unlocked`, `locked` or `unknown` |
 | `{expires}` | time left before expiry, e.g. `3h05m` (unlocked AWS and Vault checks only) |
 
-The checks are joined with `--separator` (default: a space) and inserted into
-`--text-format` (default `{items}`):
+Each kind in `{kinds}` groups all the checks of that kind, and is rendered with
+`--kind-format` (default `{icon} {kind}`). Its placeholders are `{kind}`, plus
+`{icon}`, `{color}`, `{state}`, `{unlocked}`, `{locked}`, `{unknown}` and
+`{total}`, computed over the checks of that kind only. With two AWS profiles of
+which one is logged in, `aws` is `partial`.
 
-| Placeholder | Value |
-|-------------|-------|
-| `{items}` | the rendered checks |
-| `{icon}` | overall icon: the unlocked, locked or unknown icon, or `--icon-partial` (default 🔐) when only some checks are unlocked |
-| `{state}` | overall state: `unlocked`, `partial`, `locked` or `unknown` |
-| `{unlocked}`, `{locked}`, `{unknown}` | number of checks in that state |
-| `{total}` | number of checks |
-
-Unknown placeholders are left as they are.
+The entries of `{items}` and `{kinds}` are joined with `--separator` (default: a
+space). Unknown placeholders are left as they are.
 
 ```sh
 lock-indicator --aws main --vault ~/.vault-token --item-format '{icon} {label} {expires}' --separator ' | '
 lock-indicator --aws main --aws sbx --gpg 0xA629E94B9C4B2A03 --text-format '{icon} {unlocked}/{total}'
+lock-indicator --aws main --aws sbx --gpg 0xA629E94B9C4B2A03 --text-format '{kinds}' --kind-format '{icon} {kind} {unlocked}/{total}'
 ```
 
 ```
 🔓 main 2h59m | 🔒 .vault-token
 🔐 2/3
+🔓 gpg 1/1 🔐 aws 1/2
 ```
+
+`{color}` is meant for waybar, which renders [Pango markup](https://docs.gtk.org/Pango/pango_markup.html):
+`<span color='{color}'>{kind}</span>` shows each kind in green (unlocked),
+orange (partial), red (locked) or grey (unknown). The default colors are
+`#98c379`, `#d19a66`, `#e06c75` and `#888888`; set them with `--color-unlocked`,
+`--color-partial`, `--color-locked` and `--color-unknown`, or `[colors]` in the
+configuration file. Any Pango color works, such as `orange` or `#ffa500`.
 
 **`json`**: an overall state, plus the details of every check:
 
@@ -166,6 +186,7 @@ format = "waybar"        # text, json or waybar
 timeout = 10             # seconds, for each external command
 text_format = "{items}"
 item_format = "{icon} {kind}:{label}"
+kind_format = "{icon} {kind}"
 separator = " "
 
 [icons]
@@ -173,6 +194,12 @@ unlocked = "🔓"
 locked = "🔒"
 unknown = "❓"
 partial = "🔐"
+
+[colors]
+unlocked = "#98c379"
+locked = "#e06c75"
+unknown = "#888888"
+partial = "#d19a66"
 
 [[gpg]]
 key = "0xA629E94B9C4B2A03"
@@ -211,6 +238,32 @@ format:
     "interval": 60,
     "tooltip": true
 }
+```
+
+For a colored overview with one entry per kind, such as a green `gpg` and an
+orange `aws` when only one of two AWS profiles is logged in, set in the
+configuration file:
+
+```toml
+format = "waybar"
+text_format = "{kinds}"
+kind_format = "{kind}:<span color='{color}'>●</span>"
+```
+
+The tooltip still lists every check with its details.
+
+`{kinds}` always lists the kinds in the same order (gpg, aws, gcloud, vault)
+under their own names. To choose the order and the names, write the line
+yourself with the placeholders of each kind:
+
+```toml
+format = "waybar"
+text_format = "aws:<span color='{aws.color}'>●</span> gpg:<span color='{gpg.color}'>●</span> gcp:<span color='{gcloud.color}'>●</span> vault:<span color='{vault.color}'>●</span>"
+
+[colors]
+unlocked = "green"
+partial = "orange"
+locked = "red"
 ```
 
 To show a single icon for the overall state and keep the details in the
