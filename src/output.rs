@@ -7,9 +7,10 @@ use serde::Serialize;
 
 use crate::check::{Outcome, State, human_duration};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
-    /// One line, each check rendered with --item-format
+    /// One line rendered with --text-format and --item-format
     Text,
     /// Detailed report of every check
     Json,
@@ -18,15 +19,36 @@ pub enum Format {
 }
 
 pub struct Style {
+    /// Template of the whole text, where `{items}` are the rendered checks.
+    pub text_format: String,
+    /// Template of each check in `{items}`.
     pub item_format: String,
     pub separator: String,
     pub icons: Icons,
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Style {
+            text_format: "{items}".into(),
+            item_format: "{icon} {kind}:{label}".into(),
+            separator: " ".into(),
+            icons: Icons {
+                unlocked: "🔓".into(),
+                locked: "🔒".into(),
+                unknown: "❓".into(),
+                partial: "🔐".into(),
+            },
+        }
+    }
 }
 
 pub struct Icons {
     pub unlocked: String,
     pub locked: String,
     pub unknown: String,
+    /// Overall icon when only some checks are unlocked.
+    pub partial: String,
 }
 
 impl Icons {
@@ -35,6 +57,35 @@ impl Icons {
             State::Unlocked => &self.unlocked,
             State::Locked => &self.locked,
             State::Unknown => &self.unknown,
+        }
+    }
+
+    fn overall(&self, summary: Summary) -> &str {
+        match summary {
+            Summary::Unlocked => &self.unlocked,
+            Summary::Partial => &self.partial,
+            Summary::Locked => &self.locked,
+            Summary::Unknown => &self.unknown,
+        }
+    }
+}
+
+/// Overall state of all checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Summary {
+    Unlocked,
+    Partial,
+    Locked,
+    Unknown,
+}
+
+impl Summary {
+    fn as_str(self) -> &'static str {
+        match self {
+            Summary::Unlocked => "unlocked",
+            Summary::Partial => "partial",
+            Summary::Locked => "locked",
+            Summary::Unknown => "unknown",
         }
     }
 }
@@ -47,40 +98,57 @@ pub fn render(format: Format, outcomes: &[Outcome], style: &Style, now: DateTime
     }
 }
 
-/// Overall state of all checks: `unlocked`, `partial`, `locked` or `unknown`.
-pub fn summary(outcomes: &[Outcome]) -> &'static str {
-    let count = |state| outcomes.iter().filter(|o| o.status.state == state).count();
-    let unlocked = count(State::Unlocked);
+fn summary(outcomes: &[Outcome]) -> Summary {
+    let unlocked = count(outcomes, State::Unlocked);
     if unlocked == outcomes.len() {
-        "unlocked"
+        Summary::Unlocked
     } else if unlocked > 0 {
-        "partial"
-    } else if count(State::Locked) > 0 {
-        "locked"
+        Summary::Partial
+    } else if count(outcomes, State::Locked) > 0 {
+        Summary::Locked
     } else {
-        "unknown"
+        Summary::Unknown
     }
 }
 
+fn count(outcomes: &[Outcome], state: State) -> usize {
+    outcomes.iter().filter(|o| o.status.state == state).count()
+}
+
 fn text(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -> String {
-    outcomes
+    let items = outcomes
         .iter()
-        .map(|outcome| {
-            let status = &outcome.status;
-            render_template(&style.item_format, |name| {
-                let value: Cow<str> = match name {
-                    "icon" => return Some(style.icons.get(status.state).to_string()),
-                    "kind" => outcome.check.kind.as_str().into(),
-                    "label" => outcome.check.label.as_str().into(),
-                    "state" => status.state.as_str().into(),
-                    "expires" => remaining(outcome, now).unwrap_or_default().into(),
-                    _ => return None,
-                };
-                Some(escape(&value, markup).into_owned())
-            })
-        })
+        .map(|outcome| item(outcome, style, now, markup))
         .collect::<Vec<_>>()
-        .join(&style.separator)
+        .join(&style.separator);
+    let summary = summary(outcomes);
+    render_template(&style.text_format, |name| {
+        Some(match name {
+            "items" => items.clone(),
+            "icon" => style.icons.overall(summary).to_string(),
+            "state" => summary.as_str().to_string(),
+            "unlocked" => count(outcomes, State::Unlocked).to_string(),
+            "locked" => count(outcomes, State::Locked).to_string(),
+            "unknown" => count(outcomes, State::Unknown).to_string(),
+            "total" => outcomes.len().to_string(),
+            _ => return None,
+        })
+    })
+}
+
+fn item(outcome: &Outcome, style: &Style, now: DateTime<Utc>, markup: bool) -> String {
+    let status = &outcome.status;
+    render_template(&style.item_format, |name| {
+        let value: Cow<str> = match name {
+            "icon" => return Some(style.icons.get(status.state).to_string()),
+            "kind" => outcome.check.kind.as_str().into(),
+            "label" => outcome.check.label.as_str().into(),
+            "state" => status.state.as_str().into(),
+            "expires" => remaining(outcome, now).unwrap_or_default().into(),
+            _ => return None,
+        };
+        Some(escape(&value, markup).into_owned())
+    })
 }
 
 fn tooltip(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -> String {
@@ -128,7 +196,7 @@ fn json(outcomes: &[Outcome], now: DateTime<Utc>) -> String {
     }
 
     let report = Report {
-        state: summary(outcomes),
+        state: summary(outcomes).as_str(),
         checks: outcomes
             .iter()
             .map(|Outcome { check, status }| Check {
@@ -156,16 +224,15 @@ fn waybar(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>) -> String {
         percentage: usize,
     }
 
-    let unlocked = outcomes
-        .iter()
-        .filter(|o| o.status.state == State::Unlocked)
-        .count();
+    let summary = summary(outcomes).as_str();
     let module = Module {
         text: text(outcomes, style, now, true),
         tooltip: tooltip(outcomes, style, now, true),
-        alt: summary(outcomes),
-        class: summary(outcomes),
-        percentage: (unlocked * 100).checked_div(outcomes.len()).unwrap_or(0),
+        alt: summary,
+        class: summary,
+        percentage: (count(outcomes, State::Unlocked) * 100)
+            .checked_div(outcomes.len())
+            .unwrap_or(0),
     };
     serde_json::to_string(&module).expect("module serialization cannot fail")
 }
@@ -238,12 +305,14 @@ mod tests {
 
     fn style(item_format: &str) -> Style {
         Style {
+            text_format: "{items}".into(),
             item_format: item_format.into(),
             separator: " ".into(),
             icons: Icons {
                 unlocked: "U".into(),
                 locked: "L".into(),
                 unknown: "?".into(),
+                partial: "P".into(),
             },
         }
     }
@@ -294,11 +363,22 @@ mod tests {
         let unlocked = |label| outcome(Kind::Aws, label, Status::unlocked());
         let locked = |label| outcome(Kind::Aws, label, Status::locked("x"));
         let unknown = |label| outcome(Kind::Aws, label, Status::unknown("x"));
-        assert_eq!(summary(&[unlocked("a"), unlocked("b")]), "unlocked");
-        assert_eq!(summary(&[unlocked("a"), locked("b")]), "partial");
-        assert_eq!(summary(&[unlocked("a"), unknown("b")]), "partial");
-        assert_eq!(summary(&[locked("a"), unknown("b")]), "locked");
-        assert_eq!(summary(&[unknown("a")]), "unknown");
+        assert_eq!(summary(&[unlocked("a"), unlocked("b")]), Summary::Unlocked);
+        assert_eq!(summary(&[unlocked("a"), locked("b")]), Summary::Partial);
+        assert_eq!(summary(&[unlocked("a"), unknown("b")]), Summary::Partial);
+        assert_eq!(summary(&[locked("a"), unknown("b")]), Summary::Locked);
+        assert_eq!(summary(&[unknown("a")]), Summary::Unknown);
+    }
+
+    #[test]
+    fn text_format() {
+        let mut style = style("{label}");
+        style.text_format =
+            "{icon} {unlocked}/{total} [{items}] {state} {locked} {unknown} {nope}".into();
+        assert_eq!(
+            text(&sample(), &style, now(), false),
+            "P 2/3 [work main prod] partial 1 0 {nope}"
+        );
     }
 
     #[test]

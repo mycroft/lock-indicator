@@ -15,7 +15,8 @@ runs once and exits; the status bar decides how often to call it.
 - **gcloud accounts**: whether `gcloud auth login` credentials still work or need a new login.
 - **Vault tokens**: whether the token in a file is still valid, and how long it has left. Each file can point to its own Vault server.
 - **Multiple targets**: every check can be repeated, and all checks run in parallel.
-- **Output formats**: a one-line text with a configurable template, a detailed JSON report, or waybar JSON with a tooltip and CSS classes.
+- **Output formats**: a one-line text with configurable templates, a detailed JSON report, or waybar JSON with a tooltip and CSS classes.
+- **Configuration file**: checks, output format, templates and icons can be set in a TOML file, and command-line options override it.
 
 ## Getting Started
 
@@ -42,8 +43,9 @@ This installs the `lock-indicator` binary in `~/.cargo/bin`.
 
 ## Usage
 
-Pass one or more checks. Each one takes a value and optional comma-separated
-options:
+Pass one or more checks, on the command line or in the
+[configuration file](#configuration-file). On the command line, each check
+takes a value and optional comma-separated options:
 
 | Option | Value | Options |
 |--------|-------|---------|
@@ -91,8 +93,8 @@ access token if needed, as any `gcloud` command would.
 
 Choose the format with `-f`/`--format`.
 
-**`text`** (default): one line. Each check is rendered with `--item-format`
-and joined with `--separator`.
+**`text`** (default): one line, built from two templates. Each check is
+rendered with `--item-format` (default `{icon} {kind}:{label}`):
 
 | Placeholder | Value |
 |-------------|-------|
@@ -102,8 +104,27 @@ and joined with `--separator`.
 | `{state}` | `unlocked`, `locked` or `unknown` |
 | `{expires}` | time left before expiry, e.g. `3h05m` (unlocked AWS and Vault checks only) |
 
+The checks are joined with `--separator` (default: a space) and inserted into
+`--text-format` (default `{items}`):
+
+| Placeholder | Value |
+|-------------|-------|
+| `{items}` | the rendered checks |
+| `{icon}` | overall icon: the unlocked, locked or unknown icon, or `--icon-partial` (default 🔐) when only some checks are unlocked |
+| `{state}` | overall state: `unlocked`, `partial`, `locked` or `unknown` |
+| `{unlocked}`, `{locked}`, `{unknown}` | number of checks in that state |
+| `{total}` | number of checks |
+
+Unknown placeholders are left as they are.
+
 ```sh
 lock-indicator --aws main --vault ~/.vault-token --item-format '{icon} {label} {expires}' --separator ' | '
+lock-indicator --aws main --aws sbx --gpg 0xA629E94B9C4B2A03 --text-format '{icon} {unlocked}/{total}'
+```
+
+```
+🔓 main 2h59m | 🔒 .vault-token
+🔐 2/3
 ```
 
 **`json`**: an overall state, plus the details of every check:
@@ -134,11 +155,58 @@ expiry and details, and `alt` and `class` hold the overall state: `unlocked`,
 Labels and details are escaped for Pango markup, while `--item-format` and the
 icons are not, so they can contain markup such as `<span color='red'>`.
 
+### Configuration file
+
+Everything above can also be set in a TOML file, by default
+`$XDG_CONFIG_HOME/lock-indicator/config.toml` (`~/.config/lock-indicator/config.toml`).
+Use `-c`/`--config FILE` to read another file instead. All settings are optional:
+
+```toml
+format = "waybar"        # text, json or waybar
+timeout = 10             # seconds, for each external command
+text_format = "{items}"
+item_format = "{icon} {kind}:{label}"
+separator = " "
+
+[icons]
+unlocked = "🔓"
+locked = "🔒"
+unknown = "❓"
+partial = "🔐"
+
+[[gpg]]
+key = "0xA629E94B9C4B2A03"
+label = "work"           # optional, like for every check
+
+[[aws]]
+profile = "main"
+
+[[aws]]
+profile = "sbx"
+label = "sandbox"
+
+[[gcloud]]
+account = "me@example.com"
+
+[[vault]]
+token_file = "~/.vault-token"
+addr = "https://vault.example.com:8200"   # optional, defaults to $VAULT_ADDR
+```
+
+How the file and the command line combine:
+
+- An option given on the command line overrides the same setting in the file, which overrides the built-in default.
+- Checks given on the command line replace all the checks from the file. Use this to run a single check with your usual output settings.
+- A missing default file is ignored. A missing `--config` file, an unknown key or an invalid value is an error.
+
 ### Waybar
+
+With the checks in the configuration file, the module only needs the output
+format:
 
 ```jsonc
 "custom/locks": {
-    "exec": "lock-indicator --format waybar --gpg 0xA629E94B9C4B2A03,label=work --aws main --gcloud me@example.com,label=gcp",
+    "exec": "lock-indicator --format waybar",
     "return-type": "json",
     "interval": 60,
     "tooltip": true
@@ -168,7 +236,8 @@ Style the module from `class`:
 
 ### Exit status
 
-`0` whenever the checks ran, whatever their states. `2` on invalid arguments.
+`0` whenever the checks ran, whatever their states. `2` on invalid arguments
+or configuration, or when there is nothing to check.
 
 ## Build & Run
 
@@ -195,12 +264,14 @@ The tests use fixtures and don't need any credentials.
 
 ## Configuration
 
-Besides the command-line options, `lock-indicator` reads these environment
-variables, directly or through the tools it runs:
+Besides the command-line options and the
+[configuration file](#configuration-file), `lock-indicator` reads these
+environment variables, directly or through the tools it runs:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `HOME` | Yes | | Location of `~/.aws/config`, `~/.aws/sso/cache` and `~`-prefixed Vault token paths |
+| `XDG_CONFIG_HOME` | No | `~/.config` | Directory containing `lock-indicator/config.toml` |
 | `AWS_CONFIG_FILE` | No | `~/.aws/config` | AWS config file used to resolve profiles |
 | `VAULT_ADDR` | For `--vault` without `addr=` | | Vault server address |
 | `VAULT_CACERT`, `VAULT_NAMESPACE`, … | No | | Passed through to `vault token lookup` |
