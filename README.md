@@ -262,6 +262,22 @@ cargo test
 
 The tests use fixtures and don't need any credentials.
 
+GitHub Actions runs `cargo fmt --check`, `cargo clippy -D warnings` and the tests
+on pushes to `main` and on pull requests (`.github/workflows/ci.yml`).
+
+### Releasing
+
+Set the new `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` runs CI and checks that the tag matches the crate
+version. It then builds static binaries for `x86_64-unknown-linux-musl` and
+`aarch64-unknown-linux-musl` and publishes them, with SHA-256 checksums, as a
+GitHub release. Tags containing a `-` (e.g. `v0.2.0-rc.1`) become pre-releases.
+
 ## Configuration
 
 Besides the command-line options and the
