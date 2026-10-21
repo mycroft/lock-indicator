@@ -139,6 +139,11 @@ which one is logged in, `aws` is `partial`.
 The entries of `{items}` and `{kinds}` are joined with `--separator` (default: a
 space). Unknown placeholders are left as they are.
 
+When every check is unlocked, `--text-format-all-unlocked` replaces
+`--text-format` if it is set. It takes the same placeholders, and optional
+checks don't prevent it. This keeps the bar short while everything is fine,
+for example `--text-format-all-unlocked 'locks: {icon}'`.
+
 ```sh
 lock-indicator --aws main --vault ~/.vault-token --item-format '{icon} {label} {expires}' --separator ' | '
 lock-indicator --aws main --aws sbx --gpg 0xA629E94B9C4B2A03 --text-format '{icon} {unlocked}/{total}'
@@ -197,6 +202,7 @@ Use `-c`/`--config FILE` to read another file instead. All settings are optional
 format = "waybar"        # text, json or waybar
 timeout = 10             # seconds, for each external command
 text_format = "{items}"
+text_format_all_unlocked = "locks: {icon}"   # used instead when everything is unlocked
 item_format = "{icon} {kind}:{label}"
 kind_format = "{icon} {kind}"
 separator = " "

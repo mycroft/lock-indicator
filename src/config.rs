@@ -19,6 +19,7 @@ pub struct Config {
     pub format: Option<Format>,
     pub timeout: Option<u64>,
     pub text_format: Option<String>,
+    pub text_format_all_unlocked: Option<String>,
     pub item_format: Option<String>,
     pub kind_format: Option<String>,
     pub separator: Option<String>,
@@ -156,6 +157,7 @@ mod tests {
 format = "waybar"
 timeout = 5
 text_format = "{icon} {unlocked}/{total}"
+text_format_all_unlocked = "locks: {icon}"
 item_format = "{icon} {label}"
 kind_format = "<span color='{color}'>{kind}</span>"
 separator = " | "
@@ -213,6 +215,10 @@ label = "prod"
         assert_eq!(
             config.text_format.as_deref(),
             Some("{icon} {unlocked}/{total}")
+        );
+        assert_eq!(
+            config.text_format_all_unlocked.as_deref(),
+            Some("locks: {icon}")
         );
         assert_eq!(config.item_format.as_deref(), Some("{icon} {label}"));
         assert_eq!(config.separator.as_deref(), Some(" | "));

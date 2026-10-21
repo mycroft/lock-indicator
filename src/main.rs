@@ -79,6 +79,11 @@ struct Cli {
     #[arg(long, value_name = "TEMPLATE")]
     text_format: Option<String>,
 
+    /// Template replacing --text-format when every check (besides optional ones) is unlocked;
+    /// same placeholders [default: none]
+    #[arg(long, value_name = "TEMPLATE")]
+    text_format_all_unlocked: Option<String>,
+
     /// Template of each check in {items}; placeholders: {icon}, {color}, {kind}, {label},
     /// {state}, {expires} [default: "{icon} {kind}:{label}"]
     #[arg(long, value_name = "TEMPLATE")]
@@ -184,6 +189,9 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
         },
         style: Style {
             text_format: pick(cli.text_format, config.text_format, defaults.text_format),
+            text_format_all_unlocked: cli
+                .text_format_all_unlocked
+                .or(config.text_format_all_unlocked),
             item_format: pick(cli.item_format, config.item_format, defaults.item_format),
             kind_format: pick(cli.kind_format, config.kind_format, defaults.kind_format),
             separator: pick(cli.separator, config.separator, defaults.separator),
@@ -294,6 +302,7 @@ mod tests {
 format = "json"
 item_format = "{label}"
 kind_format = "{kind}"
+text_format_all_unlocked = "all good"
 [icons]
 locked = "L"
 [colors]
@@ -321,6 +330,10 @@ label = "work"
         assert_eq!(settings.style.icons.unlocked, "🔓");
         assert_eq!(settings.style.text_format, "{items}");
         assert_eq!(settings.style.kind_format, "{kind}");
+        assert_eq!(
+            settings.style.text_format_all_unlocked.as_deref(),
+            Some("all good")
+        );
         assert_eq!(settings.style.colors.partial, "orange");
         assert_eq!(settings.style.colors.locked, "#e06c75");
         assert_eq!(settings.timeout, Duration::from_secs(DEFAULT_TIMEOUT));
@@ -343,6 +356,7 @@ label = "work"
             "--icon-locked=X",
             "--color-partial=yellow",
             "--kind-format={icon}",
+            "--text-format-all-unlocked={icon}",
             "--timeout=3",
         ];
         let settings = resolve_with(&args, CONFIG).unwrap();
@@ -352,6 +366,10 @@ label = "work"
         assert_eq!(settings.style.icons.locked, "X");
         assert_eq!(settings.style.colors.partial, "yellow");
         assert_eq!(settings.style.kind_format, "{icon}");
+        assert_eq!(
+            settings.style.text_format_all_unlocked.as_deref(),
+            Some("{icon}")
+        );
         assert_eq!(settings.timeout, Duration::from_secs(3));
     }
 

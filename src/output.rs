@@ -22,6 +22,8 @@ pub struct Style {
     /// Template of the whole text, where `{items}` are the rendered checks and
     /// `{kinds}` the rendered kinds.
     pub text_format: String,
+    /// Template replacing `text_format` when every counted check is unlocked.
+    pub text_format_all_unlocked: Option<String>,
     /// Template of each check in `{items}`.
     pub item_format: String,
     /// Template of each kind of check in `{kinds}`.
@@ -35,6 +37,7 @@ impl Default for Style {
     fn default() -> Self {
         Style {
             text_format: "{items}".into(),
+            text_format_all_unlocked: None,
             item_format: "{icon} {kind}:{label}".into(),
             kind_format: "{icon} {kind}".into(),
             separator: " ".into(),
@@ -190,7 +193,11 @@ fn text(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -
         .collect::<Vec<_>>()
         .join(&style.separator);
     let counts = Counts::of(counted(outcomes));
-    render_template(&style.text_format, |name| match name {
+    let template = match (&style.text_format_all_unlocked, counts.summary()) {
+        (Some(template), Summary::Unlocked) => template,
+        _ => &style.text_format,
+    };
+    render_template(template, |name| match name {
         "items" => Some(items.clone()),
         "kinds" => Some(kinds.clone()),
         // `{aws.color}`, `{gpg.state}`...: a placeholder for the checks of one kind.
@@ -379,6 +386,7 @@ mod tests {
     fn style(item_format: &str) -> Style {
         Style {
             text_format: "{items}".into(),
+            text_format_all_unlocked: None,
             item_format: item_format.into(),
             kind_format: "{icon} {kind}".into(),
             separator: " ".into(),
@@ -460,6 +468,23 @@ mod tests {
             text(&sample(), &style, now(), false),
             "P 2/3 [work main prod] partial 1 0 {nope}"
         );
+    }
+
+    #[test]
+    fn text_format_all_unlocked() {
+        let mut style = style("{label}");
+        style.text_format = "{unlocked}/{total}: {items}".into();
+        style.text_format_all_unlocked = Some("locks: {icon} {total}".into());
+        let unlocked = |label| outcome(Kind::Aws, label, Status::unlocked());
+        let mut outcomes = vec![unlocked("main"), unlocked("sbx")];
+        assert_eq!(text(&outcomes, &style, now(), false), "locks: U 2");
+
+        outcomes.push(outcome(Kind::Gcloud, "perso", Status::locked("expired")));
+        assert_eq!(text(&outcomes, &style, now(), false), "2/3: main sbx perso");
+
+        // Optional checks don't prevent it.
+        outcomes[2].check.optional = true;
+        assert_eq!(text(&outcomes, &style, now(), false), "locks: U 2");
     }
 
     #[test]
