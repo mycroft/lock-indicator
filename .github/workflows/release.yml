@@ -11,10 +11,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The repository is mirrored from a Gitea instance whose Actions also run this
+  # workflow. Releases are published to GitHub only: skipping these two jobs
+  # elsewhere also skips the build and release jobs that depend on them.
   ci:
+    if: github.server_url == 'https://github.com'
     uses: ./.github/workflows/ci.yml
 
   version:
+    if: github.server_url == 'https://github.com'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
