@@ -105,8 +105,21 @@ impl Summary {
     }
 }
 
-pub fn render(format: Format, outcomes: &[Outcome], style: &Style, now: DateTime<Utc>) -> String {
+/// Renders the outcomes in `format`. With `verbose`, the text format is followed by
+/// the details of every check, one per line.
+pub fn render(
+    format: Format,
+    outcomes: &[Outcome],
+    style: &Style,
+    now: DateTime<Utc>,
+    verbose: bool,
+) -> String {
     match format {
+        Format::Text if verbose => format!(
+            "{}\n{}",
+            text(outcomes, style, now, false),
+            details(outcomes, style, now, false)
+        ),
         Format::Text => text(outcomes, style, now, false),
         Format::Json => json(outcomes, now),
         Format::Waybar => waybar(outcomes, style, now),
@@ -227,7 +240,9 @@ fn item(outcome: &Outcome, style: &Style, now: DateTime<Utc>, markup: bool) -> S
     })
 }
 
-fn tooltip(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -> String {
+/// One line per check with its state, expiry and detail, optional checks
+/// included: the waybar tooltip and the verbose text output.
+fn details(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>, markup: bool) -> String {
     outcomes
         .iter()
         .map(|outcome| {
@@ -308,7 +323,7 @@ fn waybar(outcomes: &[Outcome], style: &Style, now: DateTime<Utc>) -> String {
     let summary = counts.summary().as_str();
     let module = Module {
         text: text(outcomes, style, now, true),
-        tooltip: tooltip(outcomes, style, now, true),
+        tooltip: details(outcomes, style, now, true),
         alt: summary,
         class: summary,
         percentage: (counts.unlocked * 100)
@@ -564,6 +579,37 @@ mod tests {
         assert_eq!(
             text(&outcomes, &style, now(), false),
             "gpg 1/1 unlocked, aws 1/2 partial, gcloud 0/1 unknown, vault 0/1 locked"
+        );
+    }
+
+    #[test]
+    fn verbose_text() {
+        let mut outcomes = sample();
+        outcomes[2].check.optional = true;
+        let style = style("{icon} {label}");
+        assert_eq!(
+            render(Format::Text, &outcomes, &style, now(), true),
+            "U work U main\n\
+             U gpg:work — unlocked: passphrase cached for sign\n\
+             U aws:main — unlocked, expires in 3h05m ({})\n\
+             L vault:prod — locked (optional): token expired, revoked or invalid"
+                .replace(
+                    "{}",
+                    &parse_timestamp("2026-10-21T15:05:00Z")
+                        .unwrap()
+                        .with_timezone(&Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                )
+        );
+        assert_eq!(
+            render(Format::Text, &outcomes, &style, now(), false),
+            "U work U main"
+        );
+        // Only the text format is affected.
+        assert_eq!(
+            render(Format::Json, &outcomes, &style, now(), true),
+            json(&outcomes, now())
         );
     }
 

@@ -73,6 +73,11 @@ struct Cli {
     #[arg(short, long, value_enum)]
     format: Option<Format>,
 
+    /// With the text format, also print the details of every check, one per line,
+    /// as in the waybar tooltip
+    #[arg(short, long)]
+    verbose: bool,
+
     /// Template of the whole text; placeholders: {items}, {kinds}, {icon}, {color}, {state},
     /// {unlocked}, {locked}, {unknown}, {total}, and the same for one kind, e.g. {aws.color}
     /// [default: "{items}"]
@@ -142,6 +147,7 @@ struct Settings {
     timeout: Duration,
     style: Style,
     programs: Programs,
+    verbose: bool,
 }
 
 fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
@@ -178,6 +184,7 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
             .collect(),
         format: pick(cli.format, config.format, Format::Text),
         timeout: Duration::from_secs(pick(cli.timeout, config.timeout, DEFAULT_TIMEOUT)),
+        verbose: cli.verbose,
         programs: Programs {
             gpg: program(config.programs.gpg, default_programs.gpg),
             gpg_connect_agent: program(
@@ -277,7 +284,13 @@ fn main() {
 
     println!(
         "{}",
-        output::render(settings.format, &outcomes, &settings.style, Utc::now())
+        output::render(
+            settings.format,
+            &outcomes,
+            &settings.style,
+            Utc::now(),
+            settings.verbose
+        )
     );
 }
 
@@ -361,6 +374,7 @@ label = "work"
         ];
         let settings = resolve_with(&args, CONFIG).unwrap();
         assert_eq!(targets(&settings), [(Kind::Aws, "sbx")]);
+        assert!(!settings.verbose);
         assert_eq!(settings.format, Format::Waybar);
         assert_eq!(settings.style.item_format, "{icon}");
         assert_eq!(settings.style.icons.locked, "X");
@@ -371,6 +385,12 @@ label = "work"
             Some("{icon}")
         );
         assert_eq!(settings.timeout, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn verbose_flag() {
+        assert!(resolve_with(&["-v"], CONFIG).unwrap().verbose);
+        assert!(resolve_with(&["--verbose"], CONFIG).unwrap().verbose);
     }
 
     #[test]

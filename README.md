@@ -144,6 +144,20 @@ When every check is unlocked, `--text-format-all-unlocked` replaces
 checks don't prevent it. This keeps the bar short while everything is fine,
 for example `--text-format-all-unlocked 'locks: {icon}'`.
 
+With `-v`/`--verbose`, the line is followed by the details of every check, one
+per line, as in the waybar tooltip. Optional checks are included:
+
+```
+$ lock-indicator -v --gpg 0xA629E94B9C4B2A03,label=work --aws main --aws perso,optional
+🔒 gpg:work 🔓 aws:main
+🔒 gpg:work — locked: passphrase not cached
+🔓 aws:main — unlocked, expires in 2h59m (2026-10-24 23:29)
+🔒 aws:perso — locked (optional): no cached SSO token, run `aws sso login --profile perso`
+```
+
+`--verbose` only changes the `text` format: `json` already has every detail and
+`waybar` has them in its tooltip.
+
 ```sh
 lock-indicator --aws main --vault ~/.vault-token --item-format '{icon} {label} {expires}' --separator ' | '
 lock-indicator --aws main --aws sbx --gpg 0xA629E94B9C4B2A03 --text-format '{icon} {unlocked}/{total}'
