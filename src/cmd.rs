@@ -1,6 +1,6 @@
 //! Running external commands with a timeout.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -17,14 +17,36 @@ pub struct Output {
 /// Runs `cmd` with stdin closed and its output captured. The child is killed if
 /// it has not exited within `timeout`.
 pub fn run(cmd: &mut Command, timeout: Duration) -> io::Result<Output> {
+    run_with_input(cmd, None, timeout)
+}
+
+/// Like [`run`], with `input` written to the child's stdin when given.
+pub fn run_with_input(
+    cmd: &mut Command,
+    input: Option<&str>,
+    timeout: Duration,
+) -> io::Result<Output> {
+    let stdin = if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
     // Drain both pipes concurrently so a chatty child cannot block on a full pipe.
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
+    if let (Some(input), Some(mut pipe)) = (input, child.stdin.take()) {
+        // Written from a thread so a child that does not read its input cannot
+        // block us past the timeout. Closing the pipe signals the end of input.
+        let input = input.to_string();
+        thread::spawn(move || {
+            let _ = pipe.write_all(input.as_bytes());
+        });
+    }
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -97,6 +119,18 @@ mod tests {
         assert_eq!(out.stdout, "out\n");
         assert_eq!(out.stderr, "err\n");
         assert_eq!(out.status.code(), Some(3));
+    }
+
+    #[test]
+    fn writes_input() {
+        let out = run_with_input(
+            Command::new("sh").args(["-c", "read -r line; echo \"got $line\""]),
+            Some("ghcr.io\n"),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(out.stdout, "got ghcr.io\n");
+        assert!(out.status.success());
     }
 
     #[test]

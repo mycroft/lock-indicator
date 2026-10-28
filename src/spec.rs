@@ -4,28 +4,46 @@
 pub struct Spec {
     pub value: String,
     pub label: Option<String>,
+    /// Vault server address.
     pub addr: Option<String>,
+    /// Docker auth file.
+    pub auth_file: Option<String>,
+    /// Docker: verify credentials without an expiry date with the registry.
+    pub remote: bool,
     /// Checked and reported, but left out of the text and the overall state.
     pub optional: bool,
 }
 
 /// Parses a spec accepting the `label` and `optional` options.
 pub fn parse_basic(s: &str) -> Result<Spec, String> {
-    parse(s, false)
+    parse(s, &[])
 }
 
 /// Parses a Vault token file spec, also accepting the `addr` option.
 pub fn parse_vault(s: &str) -> Result<Spec, String> {
-    parse(s, true)
+    parse(s, &["addr=URL"])
 }
 
-fn parse(s: &str, with_addr: bool) -> Result<Spec, String> {
+/// Parses a Docker registry spec, also accepting the `auth_file` and `remote`
+/// options.
+pub fn parse_docker(s: &str) -> Result<Spec, String> {
+    parse(s, &["auth_file=PATH", "remote"])
+}
+
+/// `extra` lists the options accepted besides `label` and `optional`, as shown
+/// in the error message.
+fn parse(s: &str, extra: &[&str]) -> Result<Spec, String> {
     let mut parts = s.split(',');
     let value = parts.next().unwrap_or_default().trim();
     if value.is_empty() {
         return Err("missing value before the options".into());
     }
 
+    let accepts = |key: &str| {
+        extra
+            .iter()
+            .any(|option| option.split('=').next() == Some(key))
+    };
     let mut spec = Spec {
         value: value.to_string(),
         ..Spec::default()
@@ -35,19 +53,28 @@ fn parse(s: &str, with_addr: bool) -> Result<Spec, String> {
             Some((key, val)) => (key.trim(), Some(val.trim())),
             None => (option.trim(), None),
         };
-        match (key, val) {
-            ("label", Some(label)) => spec.label = Some(label.to_string()),
-            ("addr", Some(addr)) if with_addr => spec.addr = Some(addr.to_string()),
-            ("optional", None | Some("true")) => spec.optional = true,
-            ("optional", Some("false")) => spec.optional = false,
+        let flag = match val {
+            None | Some("true") => Some(true),
+            Some("false") => Some(false),
+            Some(_) => None,
+        };
+        match (key, val, flag) {
+            ("label", Some(label), _) => spec.label = Some(label.to_string()),
+            ("addr", Some(addr), _) if accepts(key) => spec.addr = Some(addr.to_string()),
+            ("auth_file", Some(path), _) if accepts(key) => {
+                spec.auth_file = Some(path.to_string());
+            }
+            ("remote", _, Some(remote)) if accepts(key) => spec.remote = remote,
+            ("optional", _, Some(optional)) => spec.optional = optional,
             _ => {
-                let supported = if with_addr {
-                    "label=NAME, addr=URL, optional"
-                } else {
-                    "label=NAME, optional"
-                };
+                let supported: Vec<&str> = ["label=NAME"]
+                    .into_iter()
+                    .chain(extra.iter().copied())
+                    .chain(["optional"])
+                    .collect();
                 return Err(format!(
-                    "invalid option `{option}` (supported: {supported})"
+                    "invalid option `{option}` (supported: {})",
+                    supported.join(", ")
                 ));
             }
         }
@@ -108,6 +135,35 @@ mod tests {
     #[test]
     fn addr_is_vault_only() {
         assert!(parse_basic("main,addr=http://x").is_err());
+        assert!(parse_docker("ghcr.io,addr=http://x").is_err());
+    }
+
+    #[test]
+    fn docker_options() {
+        let spec = parse_docker("ghcr.io,auth_file=~/.docker/work.json,remote,label=gh").unwrap();
+        assert_eq!(spec.value, "ghcr.io");
+        assert_eq!(spec.auth_file.as_deref(), Some("~/.docker/work.json"));
+        assert!(spec.remote);
+        assert_eq!(spec.label.as_deref(), Some("gh"));
+        assert!(!parse_docker("ghcr.io,remote=false").unwrap().remote);
+        assert!(!parse_docker("ghcr.io").unwrap().remote);
+        assert!(parse_docker("ghcr.io,remote=yes").is_err());
+        assert!(parse_basic("main,remote").is_err());
+        assert!(parse_vault("/tmp/token,auth_file=/tmp/x").is_err());
+    }
+
+    #[test]
+    fn lists_supported_options() {
+        let err = parse_docker("ghcr.io,addr=x").unwrap_err();
+        assert_eq!(
+            err,
+            "invalid option `addr=x` (supported: label=NAME, auth_file=PATH, remote, optional)"
+        );
+        let err = parse_basic("main,colour=red").unwrap_err();
+        assert_eq!(
+            err,
+            "invalid option `colour=red` (supported: label=NAME, optional)"
+        );
     }
 
     #[test]

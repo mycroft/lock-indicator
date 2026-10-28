@@ -30,6 +30,7 @@ pub struct Config {
     aws: Vec<AwsEntry>,
     gcloud: Vec<GcloudEntry>,
     vault: Vec<VaultEntry>,
+    docker: Vec<DockerEntry>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -89,6 +90,18 @@ struct VaultEntry {
     optional: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DockerEntry {
+    registry: String,
+    auth_file: Option<String>,
+    #[serde(default)]
+    remote: bool,
+    label: Option<String>,
+    #[serde(default)]
+    optional: bool,
+}
+
 impl Config {
     /// The checks defined in the file, grouped by kind like on the command line.
     pub fn checks(&self) -> Vec<(Kind, Spec)> {
@@ -117,7 +130,19 @@ impl Config {
             };
             (Kind::Vault, spec)
         });
-        gpg.chain(aws).chain(gcloud).chain(vault).collect()
+        let docker = self.docker.iter().map(|e| {
+            let spec = Spec {
+                auth_file: e.auth_file.clone(),
+                remote: e.remote,
+                ..spec(&e.registry, &e.label, e.optional)
+            };
+            (Kind::Docker, spec)
+        });
+        gpg.chain(aws)
+            .chain(gcloud)
+            .chain(vault)
+            .chain(docker)
+            .collect()
     }
 }
 
@@ -196,6 +221,14 @@ optional = true
 token_file = "~/.vault-token"
 addr = "https://vault.example.com:8200"
 label = "prod"
+
+[[docker]]
+registry = "ghcr.io"
+
+[[docker]]
+registry = "registry.example.com"
+auth_file = "~/.config/containers/auth.json"
+remote = true
 "#;
 
     fn spec(value: &str, label: Option<&str>, addr: Option<&str>) -> Spec {
@@ -203,7 +236,7 @@ label = "prod"
             value: value.into(),
             label: label.map(Into::into),
             addr: addr.map(Into::into),
-            optional: false,
+            ..Spec::default()
         }
     }
 
@@ -262,6 +295,15 @@ label = "prod"
                         Some("https://vault.example.com:8200")
                     )
                 ),
+                (Kind::Docker, spec("ghcr.io", None, None)),
+                (
+                    Kind::Docker,
+                    Spec {
+                        auth_file: Some("~/.config/containers/auth.json".into()),
+                        remote: true,
+                        ..spec("registry.example.com", None, None)
+                    }
+                ),
             ]
         );
     }
@@ -282,6 +324,10 @@ label = "prod"
         assert!(toml::from_str::<Config>("format = \"yaml\"").is_err());
         assert!(toml::from_str::<Config>("[[aws]]\nname = \"main\"").is_err());
         assert!(toml::from_str::<Config>("[[gpg]]\nkey = \"x\"\naddr = \"y\"").is_err());
+        assert!(toml::from_str::<Config>("[[docker]]\nregistry = \"x\"\naddr = \"y\"").is_err());
+        assert!(
+            toml::from_str::<Config>("[[docker]]\nregistry = \"x\"\nremote = \"yes\"").is_err()
+        );
     }
 
     #[test]

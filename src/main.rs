@@ -2,9 +2,11 @@ mod aws;
 mod check;
 mod cmd;
 mod config;
+mod docker;
 mod gcloud;
 mod gpg;
 mod output;
+mod registry;
 mod spec;
 mod vault;
 
@@ -35,6 +37,7 @@ Examples:
   lock-indicator --gpg 0xA629E94B9C4B2A03,label=work --aws main --gcloud me@example.com
   lock-indicator --vault ~/.vault-token,addr=https://vault.example.com:8200,label=prod --format json
   lock-indicator --aws main --aws sbx --text-format '{icon} {unlocked}/{total}'
+  lock-indicator --docker 123456789012.dkr.ecr.eu-west-3.amazonaws.com,label=ecr --docker ghcr.io,remote
 
 Waybar module ("alt" and "class" are unlocked, partial, locked or unknown):
   "custom/locks": {
@@ -44,8 +47,8 @@ Waybar module ("alt" and "class" are unlocked, partial, locked or unknown):
       "tooltip": true
   }"#;
 
-/// Report whether credentials are unlocked: gpg-agent keys, AWS SSO, gcloud and
-/// Vault tokens.
+/// Report whether credentials are unlocked: gpg-agent keys, AWS SSO, gcloud,
+/// Vault tokens and Docker registry credentials.
 #[derive(Parser)]
 #[command(version, about, after_help = AFTER_HELP)]
 struct Cli {
@@ -68,6 +71,16 @@ struct Cli {
     /// Vault token file whose token must not be expired; the server defaults to $VAULT_ADDR
     #[arg(long, value_name = "FILE[,addr=URL][,label=NAME][,optional]", value_parser = spec::parse_vault)]
     vault: Vec<Spec>,
+
+    /// Docker registry whose credentials in the auth file [default: $DOCKER_CONFIG/config.json,
+    /// else ~/.docker/config.json] must not be expired; with `remote`, credentials without
+    /// an expiry date are verified with the registry
+    #[arg(
+        long,
+        value_name = "REGISTRY[,auth_file=PATH][,remote][,label=NAME][,optional]",
+        value_parser = spec::parse_docker
+    )]
+    docker: Vec<Spec>,
 
     /// Output format [default: text]
     #[arg(short, long, value_enum)]
@@ -135,7 +148,8 @@ struct Cli {
     #[arg(long, value_name = "COLOR")]
     color_partial: Option<String>,
 
-    /// Timeout of each external command (gpg, gcloud, vault) [default: 10]
+    /// Timeout of each external command (gpg, gcloud, vault, docker credential helpers) and of
+    /// registry verifications [default: 10]
     #[arg(long, value_name = "SECONDS")]
     timeout: Option<u64>,
 }
@@ -156,6 +170,7 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
         (Kind::Aws, cli.aws),
         (Kind::Gcloud, cli.gcloud),
         (Kind::Vault, cli.vault),
+        (Kind::Docker, cli.docker),
     ]
     .into_iter()
     .flat_map(|(kind, specs)| specs.into_iter().map(move |spec| (kind, spec)))
@@ -167,7 +182,7 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
     };
     if checks.is_empty() {
         return Err(format!(
-            "nothing to check: pass --gpg, --aws, --gcloud or --vault, or add checks to {}",
+            "nothing to check: pass --gpg, --aws, --gcloud, --vault or --docker, or add checks to {}",
             config::default_path().display()
         ));
     }

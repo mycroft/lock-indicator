@@ -1,6 +1,6 @@
 # lock-indicator
 
-> A status bar widget that tells you whether your gpg keys, AWS SSO sessions, gcloud credentials and Vault tokens are currently unlocked.
+> A status bar widget that tells you whether your gpg keys, AWS SSO sessions, gcloud credentials, Vault tokens and Docker registry logins are currently unlocked.
 
 Credentials that expire or need a passphrase tend to fail in the middle of
 something else: a commit that won't sign, a `terraform plan` that can't reach
@@ -14,6 +14,7 @@ runs once and exits; the status bar decides how often to call it.
 - **AWS SSO profiles**: whether the token cached by `aws sso login` is still valid, and how long it has left. Follows `source_profile` chains and supports both `sso_session` and legacy `sso_start_url` profiles.
 - **gcloud accounts**: whether `gcloud auth login` credentials still work or need a new login.
 - **Vault tokens**: whether the token in a file is still valid, and how long it has left. Each file can point to its own Vault server.
+- **Docker registries**: whether you are logged in to a registry and, for tokens that carry an expiry date such as Amazon ECR's, how long they have left. Reads the Docker auth file and credential helpers offline; verifying other credentials with the registry is opt-in.
 - **Multiple targets**: every check can be repeated, and all checks run in parallel.
 - **Output formats**: a one-line text with configurable templates, a detailed JSON report, or waybar JSON with a tooltip and CSS classes.
 - **Configuration file**: checks, output format, templates and icons can be set in a TOML file, and command-line options override it.
@@ -31,6 +32,7 @@ runs once and exits; the status bar decides how often to call it.
 | `--aws` | An `~/.aws/config` with SSO profiles. The `aws` CLI itself is not needed: the check only reads files. |
 | `--gcloud` | The `gcloud` CLI in `PATH` |
 | `--vault` | The `vault` CLI in `PATH`, and the address of the Vault server |
+| `--docker` | A Docker auth file. The `docker` CLI itself is not needed, but a configured credential helper (`docker-credential-…`) must be in `PATH`. |
 
 When a tool is not in `PATH`, which can happen when waybar starts with a
 minimal environment, set its location in the [`[programs]`](#configuration-file)
@@ -57,9 +59,11 @@ takes a value and optional comma-separated options:
 | `--aws` | profile name | `label=NAME`, `optional` |
 | `--gcloud` | account (e-mail) | `label=NAME`, `optional` |
 | `--vault` | token file | `label=NAME`, `addr=URL` (defaults to `$VAULT_ADDR`), `optional` |
+| `--docker` | registry, e.g. `ghcr.io` or `docker.io` | `label=NAME`, `auth_file=PATH` (defaults to `$DOCKER_CONFIG/config.json`, else `~/.docker/config.json`), `remote`, `optional` |
 
 The label is what appears in the output. It defaults to the value itself; for
-Vault it defaults to the server's host, or the file name when no `addr` is set.
+Vault it defaults to the server's host, or the file name when no `addr` is set,
+and for Docker to the registry's host.
 
 An `optional` check is still run and reported in the waybar tooltip and the JSON
 report, but it is left out of the text and of the overall state: `{items}`,
@@ -73,11 +77,12 @@ lock-indicator \
   --gpg 0xA629E94B9C4B2A03,label=work \
   --aws main --aws sbx,label=sandbox \
   --gcloud me@example.com,label=gcp \
-  --vault ~/.vault-token,addr=https://vault.example.com:8200,label=vault
+  --vault ~/.vault-token,addr=https://vault.example.com:8200,label=vault \
+  --docker 123456789012.dkr.ecr.eu-west-3.amazonaws.com,label=ecr
 ```
 
 ```
-🔓 gpg:work 🔓 aws:main 🔒 aws:sandbox 🔒 gcloud:gcp 🔓 vault:vault
+🔓 gpg:work 🔓 aws:main 🔒 aws:sandbox 🔒 gcloud:gcp 🔓 vault:vault 🔒 docker:ecr
 ```
 
 ### States
@@ -90,6 +95,7 @@ Each check ends up in one of three states:
 | aws | the cached SSO token has not expired | reads `~/.aws/sso/cache/<sha1>.json` | no |
 | gcloud | gcloud can get an access token without prompting | `gcloud auth print-access-token --account=…` | yes |
 | vault | the token is valid and has not expired | `vault token lookup` with the token from the file | yes |
+| docker | credentials are stored for the registry and, when they carry an expiry date, have not expired | reads the auth file, or runs the credential helper configured for the registry | only with `remote`, or through a credential helper |
 
 `unknown` means the state could not be determined. Common causes:
 
@@ -99,6 +105,36 @@ Each check ends up in one of three states:
 
 The checks never print or store any token. The gcloud check refreshes the
 access token if needed, as any `gcloud` command would.
+
+#### Docker registries
+
+The credentials of a registry are looked up as the docker CLI does: with the
+credential helper set for it in `credHelpers`, else with the `credsStore`
+helper, else in the `auths` of the auth file. The auth file of podman and
+skopeo (`$XDG_RUNTIME_DIR/containers/auth.json`) has the same format and works
+with `auth_file=`.
+
+Docker stores no expiry date next to credentials, so the check reads it from
+the token itself when there is one:
+
+| Credentials | Expiry | Example |
+|-------------|--------|---------|
+| Amazon ECR token | `expiration` of the token | `aws ecr get-login-password \| docker login …` |
+| JWT, as password or identity token | `exp` claim | Azure Container Registry identity tokens |
+| Password or personal access token | none | Docker Hub, GHCR, GitLab, Harbor, … |
+
+Credentials without an expiry date are reported `unlocked` with the detail
+`no expiry date, not verified with the registry`, because a revoked password
+or an expired personal access token can only be detected by the registry. Add
+the `remote` option (`remote = true` in the configuration file) to ask it: the
+check then authenticates like `docker login` does, directly or through the
+registry's token server. It is `locked` when the registry rejects the
+credentials, and `unknown` when it can't be reached. HTTPS is used unless the
+registry is given as a URL, such as `http://localhost:5000`, and the system CA
+certificates are trusted. Tokens with an expiry date are never sent anywhere.
+
+A credential helper runs at each check, as on every `docker pull`. Helpers that
+decrypt on demand, such as `pass`, may then ask for a passphrase.
 
 ### Output formats
 
@@ -116,7 +152,7 @@ Choose the format with `-f`/`--format`.
 | `{state}` | overall state: `unlocked`, `partial`, `locked` or `unknown` |
 | `{unlocked}`, `{locked}`, `{unknown}` | number of checks in that state |
 | `{total}` | number of checks |
-| `{gpg.color}`, `{aws.state}`, … | any of the above for the checks of one kind (`gpg`, `aws`, `gcloud` or `vault`) only; a kind without checks is `unknown` |
+| `{gpg.color}`, `{aws.state}`, … | any of the above for the checks of one kind (`gpg`, `aws`, `gcloud`, `vault` or `docker`) only; a kind without checks is `unknown` |
 
 Each check in `{items}` is rendered with `--item-format` (default
 `{icon} {kind}:{label}`):
@@ -125,10 +161,10 @@ Each check in `{items}` is rendered with `--item-format` (default
 |-------------|-------|
 | `{icon}` | `--icon-unlocked`, `--icon-locked` or `--icon-unknown` (defaults: 🔓 🔒 ❓) |
 | `{color}` | `--color-unlocked`, `--color-locked` or `--color-unknown` |
-| `{kind}` | `gpg`, `aws`, `gcloud` or `vault` |
+| `{kind}` | `gpg`, `aws`, `gcloud`, `vault` or `docker` |
 | `{label}` | the check's label |
 | `{state}` | `unlocked`, `locked` or `unknown` |
-| `{expires}` | time left before expiry, e.g. `3h05m` (unlocked AWS and Vault checks only) |
+| `{expires}` | time left before expiry, e.g. `3h05m` (unlocked checks with an expiry date only) |
 
 Each kind in `{kinds}` groups all the checks of that kind, and is rendered with
 `--kind-format` (default `{icon} {kind}`). Its placeholders are `{kind}`, plus
@@ -214,7 +250,7 @@ Use `-c`/`--config FILE` to read another file instead. All settings are optional
 
 ```toml
 format = "waybar"        # text, json or waybar
-timeout = 10             # seconds, for each external command
+timeout = 10             # seconds, for each external command or registry verification
 text_format = "{items}"
 text_format_all_unlocked = "locks: {icon}"   # used instead when everything is unlocked
 item_format = "{icon} {kind}:{label}"
@@ -255,6 +291,15 @@ optional = true          # reported in the tooltip, left out of the text and sta
 [[vault]]
 token_file = "~/.vault-token"
 addr = "https://vault.example.com:8200"   # optional, defaults to $VAULT_ADDR
+
+[[docker]]
+registry = "123456789012.dkr.ecr.eu-west-3.amazonaws.com"
+label = "ecr"
+
+[[docker]]
+registry = "ghcr.io"
+auth_file = "~/.docker/config.json"   # optional, defaults to $DOCKER_CONFIG/config.json
+remote = true            # verify credentials without an expiry date with the registry
 ```
 
 The `[programs]` table sets where the external programs are, as a path (`~`
@@ -300,7 +345,7 @@ kind_format = "{kind}:<span color='{color}'>●</span>"
 
 The tooltip still lists every check with its details.
 
-`{kinds}` always lists the kinds in the same order (gpg, aws, gcloud, vault)
+`{kinds}` always lists the kinds in the same order (gpg, aws, gcloud, vault, docker)
 under their own names. To choose the order and the names, write the line
 yourself with the placeholders of each kind:
 
@@ -387,13 +432,15 @@ environment variables, directly or through the tools it runs:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `HOME` | Yes | | Location of `~/.aws/config`, `~/.aws/sso/cache` and `~`-prefixed Vault token paths |
+| `HOME` | Yes | | Location of `~/.aws/config`, `~/.aws/sso/cache`, `~/.docker/config.json` and `~`-prefixed paths |
 | `XDG_CONFIG_HOME` | No | `~/.config` | Directory containing `lock-indicator/config.toml` |
 | `AWS_CONFIG_FILE` | No | `~/.aws/config` | AWS config file used to resolve profiles |
 | `VAULT_ADDR` | For `--vault` without `addr=` | | Vault server address |
 | `VAULT_CACERT`, `VAULT_NAMESPACE`, … | No | | Passed through to `vault token lookup` |
 | `GNUPGHOME` | No | `~/.gnupg` | GnuPG home used by `gpg` and `gpg-connect-agent` |
 | `CLOUDSDK_CONFIG` | No | `~/.config/gcloud` | gcloud configuration directory |
+| `DOCKER_CONFIG` | No | `~/.docker` | Directory of the default Docker auth file, `config.json` |
+| `HTTPS_PROXY`, `NO_PROXY`, … | No | | Proxy for registry verifications (`remote`) |
 
 ## References
 
@@ -403,3 +450,6 @@ environment variables, directly or through the tools it runs:
 - [Configuring IAM Identity Center authentication with the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html): SSO profiles and `aws sso login`
 - [gcloud auth print-access-token](https://cloud.google.com/sdk/gcloud/reference/auth/print-access-token)
 - [vault token lookup](https://developer.hashicorp.com/vault/docs/commands/token/lookup)
+- [docker login](https://docs.docker.com/reference/cli/docker/login/): the auth file and credential helpers
+- [docker-credential-helpers](https://github.com/docker/docker-credential-helpers): the credential helper protocol
+- [Distribution token authentication](https://distribution.github.io/distribution/spec/auth/token/): how registries authenticate clients

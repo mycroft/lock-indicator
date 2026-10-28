@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::spec::Spec;
-use crate::{aws, gcloud, gpg, vault};
+use crate::{aws, docker, gcloud, gpg, vault};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -14,10 +14,17 @@ pub enum Kind {
     Aws,
     Gcloud,
     Vault,
+    Docker,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Gpg, Kind::Aws, Kind::Gcloud, Kind::Vault];
+    pub const ALL: [Kind; 5] = [
+        Kind::Gpg,
+        Kind::Aws,
+        Kind::Gcloud,
+        Kind::Vault,
+        Kind::Docker,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -25,6 +32,7 @@ impl Kind {
             Kind::Aws => "aws",
             Kind::Gcloud => "gcloud",
             Kind::Vault => "vault",
+            Kind::Docker => "docker",
         }
     }
 }
@@ -94,10 +102,15 @@ impl Status {
 pub struct Check {
     pub kind: Kind,
     pub label: String,
-    /// What is checked: gpg key, AWS profile, gcloud account or Vault token file.
+    /// What is checked: gpg key, AWS profile, gcloud account, Vault token file
+    /// or Docker registry.
     pub target: String,
     /// Vault server address.
     pub addr: Option<String>,
+    /// Docker auth file, when not the default one.
+    pub auth_file: Option<PathBuf>,
+    /// Docker: verify credentials without an expiry date with the registry.
+    pub remote: bool,
     /// Checked and reported, but left out of the text and the overall state.
     pub optional: bool,
 }
@@ -116,6 +129,8 @@ impl Check {
             label,
             target,
             addr: spec.addr,
+            auth_file: spec.auth_file.map(|path| expand_tilde(&path)),
+            remote: spec.remote,
             optional: spec.optional,
         }
     }
@@ -134,6 +149,16 @@ impl Check {
                 Path::new(&self.target),
                 self.addr.as_deref(),
                 &programs.vault,
+                timeout,
+                Utc::now(),
+            ),
+            Kind::Docker => docker::check(
+                &self.target,
+                &self
+                    .auth_file
+                    .clone()
+                    .unwrap_or_else(docker::default_auth_file),
+                self.remote,
                 timeout,
                 Utc::now(),
             ),
@@ -214,6 +239,7 @@ fn default_label(kind: Kind, target: &str, addr: Option<&str>) -> String {
             || target.to_string(),
             |name| name.to_string_lossy().into_owned(),
         ),
+        (Kind::Docker, _) => docker::label(target),
         _ => target.to_string(),
     }
 }
@@ -280,6 +306,10 @@ mod tests {
             )
             .label,
             "vault.example.com"
+        );
+        assert_eq!(
+            Check::new(Kind::Docker, spec("https://index.docker.io/v1/", None)).label,
+            "docker.io"
         );
         let labelled = Spec {
             label: Some("prod".into()),
