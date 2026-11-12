@@ -1,6 +1,6 @@
 # lock-indicator
 
-> A status bar widget that tells you whether your gpg keys, AWS SSO sessions, gcloud credentials, Vault tokens and Docker registry logins are currently unlocked.
+> A status bar widget that tells you whether your gpg keys, AWS SSO sessions, gcloud credentials, Vault tokens, Docker registry logins and GitHub CLI logins are currently unlocked.
 
 Credentials that expire or need a passphrase tend to fail in the middle of
 something else: a commit that won't sign, a `terraform plan` that can't reach
@@ -15,6 +15,7 @@ runs once and exits; the status bar decides how often to call it.
 - **gcloud accounts**: whether `gcloud auth login` credentials still work or need a new login.
 - **Vault tokens**: whether the token in a file is still valid, and how long it has left. Each file can point to its own Vault server.
 - **Docker registries**: whether you are logged in to a registry and, for tokens that carry an expiry date such as Amazon ECR's, how long they have left. Reads the Docker auth file and credential helpers offline; verifying other credentials with the registry is opt-in.
+- **GitHub CLI**: whether the `gh auth login` token of a host's active account still works, on github.com or GitHub Enterprise Server.
 - **Multiple targets**: every check can be repeated, and all checks run in parallel.
 - **Output formats**: a one-line text with configurable templates, a detailed JSON report, or waybar JSON with a tooltip and CSS classes.
 - **Configuration file**: checks, output format, templates and icons can be set in a TOML file, and command-line options override it.
@@ -33,6 +34,7 @@ runs once and exits; the status bar decides how often to call it.
 | `--gcloud` | The `gcloud` CLI in `PATH` |
 | `--vault` | The `vault` CLI in `PATH`, and the address of the Vault server |
 | `--docker` | A Docker auth file. The `docker` CLI itself is not needed, but a configured credential helper (`docker-credential-…`) must be in `PATH`. |
+| `--github` | The `gh` CLI in `PATH` |
 
 When a tool is not in `PATH`, which can happen when waybar starts with a
 minimal environment, set its location in the [`[programs]`](#configuration-file)
@@ -60,6 +62,7 @@ takes a value and optional comma-separated options:
 | `--gcloud` | account (e-mail) | `label=NAME`, `optional` |
 | `--vault` | token file | `label=NAME`, `addr=URL` (defaults to `$VAULT_ADDR`), `optional` |
 | `--docker` | registry, e.g. `ghcr.io` or `docker.io` | `label=NAME`, `auth_file=PATH` (defaults to `$DOCKER_CONFIG/config.json`, else `~/.docker/config.json`), `remote`, `optional` |
+| `--github` | host, e.g. `github.com` | `label=NAME`, `optional` |
 
 The label is what appears in the output. It defaults to the value itself; for
 Vault it defaults to the server's host, or the file name when no `addr` is set,
@@ -78,11 +81,12 @@ lock-indicator \
   --aws main --aws sbx,label=sandbox \
   --gcloud me@example.com,label=gcp \
   --vault ~/.vault-token,addr=https://vault.example.com:8200,label=vault \
-  --docker 123456789012.dkr.ecr.eu-west-3.amazonaws.com,label=ecr
+  --docker 123456789012.dkr.ecr.eu-west-3.amazonaws.com,label=ecr \
+  --github github.com
 ```
 
 ```
-🔓 gpg:work 🔓 aws:main 🔒 aws:sandbox 🔒 gcloud:gcp 🔓 vault:vault 🔒 docker:ecr
+🔓 gpg:work 🔓 aws:main 🔒 aws:sandbox 🔒 gcloud:gcp 🔓 vault:vault 🔒 docker:ecr 🔓 github:github.com
 ```
 
 ### States
@@ -96,6 +100,7 @@ Each check ends up in one of three states:
 | gcloud | gcloud can get an access token without prompting | `gcloud auth print-access-token --account=…` | yes |
 | vault | the token is valid and has not expired | `vault token lookup` with the token from the file | yes |
 | docker | credentials are stored for the registry and, when they carry an expiry date, have not expired | reads the auth file, or runs the credential helper configured for the registry | only with `remote`, or through a credential helper |
+| github | the token of the host's active account is accepted by the GitHub API | `gh auth status --active --hostname …` | yes |
 
 `unknown` means the state could not be determined. Common causes:
 
@@ -152,7 +157,7 @@ Choose the format with `-f`/`--format`.
 | `{state}` | overall state: `unlocked`, `partial`, `locked` or `unknown` |
 | `{unlocked}`, `{locked}`, `{unknown}` | number of checks in that state |
 | `{total}` | number of checks |
-| `{gpg.color}`, `{aws.state}`, … | any of the above for the checks of one kind (`gpg`, `aws`, `gcloud`, `vault` or `docker`) only; a kind without checks is `unknown` |
+| `{gpg.color}`, `{aws.state}`, … | any of the above for the checks of one kind (`gpg`, `aws`, `gcloud`, `vault`, `docker` or `github`) only; a kind without checks is `unknown` |
 
 Each check in `{items}` is rendered with `--item-format` (default
 `{icon} {kind}:{label}`):
@@ -161,7 +166,7 @@ Each check in `{items}` is rendered with `--item-format` (default
 |-------------|-------|
 | `{icon}` | `--icon-unlocked`, `--icon-locked` or `--icon-unknown` (defaults: 🔓 🔒 ❓) |
 | `{color}` | `--color-unlocked`, `--color-locked` or `--color-unknown` |
-| `{kind}` | `gpg`, `aws`, `gcloud`, `vault` or `docker` |
+| `{kind}` | `gpg`, `aws`, `gcloud`, `vault`, `docker` or `github` |
 | `{label}` | the check's label |
 | `{state}` | `unlocked`, `locked` or `unknown` |
 | `{expires}` | time left before expiry, e.g. `3h05m` (unlocked checks with an expiry date only) |
@@ -300,6 +305,9 @@ label = "ecr"
 registry = "ghcr.io"
 auth_file = "~/.docker/config.json"   # optional, defaults to $DOCKER_CONFIG/config.json
 remote = true            # verify credentials without an expiry date with the registry
+
+[[github]]
+host = "github.com"      # optional, the default
 ```
 
 The `[programs]` table sets where the external programs are, as a path (`~`
@@ -311,6 +319,7 @@ gpg = "gpg"
 gpg_connect_agent = "gpg-connect-agent"
 gcloud = "gcloud"
 vault = "~/.nix-profile/bin/vault"
+gh = "gh"
 ```
 
 How the file and the command line combine:
@@ -345,7 +354,7 @@ kind_format = "{kind}:<span color='{color}'>●</span>"
 
 The tooltip still lists every check with its details.
 
-`{kinds}` always lists the kinds in the same order (gpg, aws, gcloud, vault, docker)
+`{kinds}` always lists the kinds in the same order (gpg, aws, gcloud, vault, docker, github)
 under their own names. To choose the order and the names, write the line
 yourself with the placeholders of each kind:
 
@@ -440,7 +449,8 @@ environment variables, directly or through the tools it runs:
 | `GNUPGHOME` | No | `~/.gnupg` | GnuPG home used by `gpg` and `gpg-connect-agent` |
 | `CLOUDSDK_CONFIG` | No | `~/.config/gcloud` | gcloud configuration directory |
 | `DOCKER_CONFIG` | No | `~/.docker` | Directory of the default Docker auth file, `config.json` |
-| `HTTPS_PROXY`, `NO_PROXY`, … | No | | Proxy for registry verifications (`remote`) |
+| `HTTPS_PROXY`, `NO_PROXY`, … | No | | Proxy for registry verifications (`remote`) and `gh` |
+| `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GH_CONFIG_DIR` | No | | Used by `gh` instead of the stored login and configuration |
 
 ## References
 
@@ -449,6 +459,7 @@ environment variables, directly or through the tools it runs:
 - [GnuPG DETAILS](https://github.com/gpg/gnupg/blob/master/doc/DETAILS): the `--with-colons` listing format
 - [Configuring IAM Identity Center authentication with the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html): SSO profiles and `aws sso login`
 - [gcloud auth print-access-token](https://cloud.google.com/sdk/gcloud/reference/auth/print-access-token)
+- [gh auth status](https://cli.github.com/manual/gh_auth_status)
 - [vault token lookup](https://developer.hashicorp.com/vault/docs/commands/token/lookup)
 - [docker login](https://docs.docker.com/reference/cli/docker/login/): the auth file and credential helpers
 - [docker-credential-helpers](https://github.com/docker/docker-credential-helpers): the credential helper protocol

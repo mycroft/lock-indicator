@@ -4,6 +4,7 @@ mod cmd;
 mod config;
 mod docker;
 mod gcloud;
+mod github;
 mod gpg;
 mod output;
 mod registry;
@@ -38,6 +39,7 @@ Examples:
   lock-indicator --vault ~/.vault-token,addr=https://vault.example.com:8200,label=prod --format json
   lock-indicator --aws main --aws sbx --text-format '{icon} {unlocked}/{total}'
   lock-indicator --docker 123456789012.dkr.ecr.eu-west-3.amazonaws.com,label=ecr --docker ghcr.io,remote
+  lock-indicator --github github.com --github github.example.com,label=ghe,optional
 
 Waybar module ("alt" and "class" are unlocked, partial, locked or unknown):
   "custom/locks": {
@@ -48,7 +50,7 @@ Waybar module ("alt" and "class" are unlocked, partial, locked or unknown):
   }"#;
 
 /// Report whether credentials are unlocked: gpg-agent keys, AWS SSO, gcloud,
-/// Vault tokens and Docker registry credentials.
+/// Vault tokens, Docker registry credentials and GitHub CLI logins.
 #[derive(Parser)]
 #[command(version, about, after_help = AFTER_HELP)]
 struct Cli {
@@ -81,6 +83,11 @@ struct Cli {
         value_parser = spec::parse_docker
     )]
     docker: Vec<Spec>,
+
+    /// GitHub host (e.g. github.com) whose `gh auth login` token, of the active account,
+    /// must still work
+    #[arg(long, value_name = "HOST[,label=NAME][,optional]", value_parser = spec::parse_basic)]
+    github: Vec<Spec>,
 
     /// Output format [default: text]
     #[arg(short, long, value_enum)]
@@ -148,7 +155,7 @@ struct Cli {
     #[arg(long, value_name = "COLOR")]
     color_partial: Option<String>,
 
-    /// Timeout of each external command (gpg, gcloud, vault, docker credential helpers) and of
+    /// Timeout of each external command (gpg, gcloud, vault, gh, docker credential helpers) and of
     /// registry verifications [default: 10]
     #[arg(long, value_name = "SECONDS")]
     timeout: Option<u64>,
@@ -171,6 +178,7 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
         (Kind::Gcloud, cli.gcloud),
         (Kind::Vault, cli.vault),
         (Kind::Docker, cli.docker),
+        (Kind::Github, cli.github),
     ]
     .into_iter()
     .flat_map(|(kind, specs)| specs.into_iter().map(move |spec| (kind, spec)))
@@ -182,7 +190,7 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
     };
     if checks.is_empty() {
         return Err(format!(
-            "nothing to check: pass --gpg, --aws, --gcloud, --vault or --docker, or add checks to {}",
+            "nothing to check: pass --gpg, --aws, --gcloud, --vault, --docker or --github, or add checks to {}",
             config::default_path().display()
         ));
     }
@@ -208,6 +216,7 @@ fn resolve(cli: Cli, config: Config) -> Result<Settings, String> {
             ),
             gcloud: program(config.programs.gcloud, default_programs.gcloud),
             vault: program(config.programs.vault, default_programs.vault),
+            gh: program(config.programs.gh, default_programs.gh),
         },
         style: Style {
             text_format: pick(cli.text_format, config.text_format, defaults.text_format),

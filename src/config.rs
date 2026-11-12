@@ -31,6 +31,7 @@ pub struct Config {
     gcloud: Vec<GcloudEntry>,
     vault: Vec<VaultEntry>,
     docker: Vec<DockerEntry>,
+    github: Vec<GithubEntry>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -51,6 +52,7 @@ pub struct Programs {
     pub gpg_connect_agent: Option<String>,
     pub gcloud: Option<String>,
     pub vault: Option<String>,
+    pub gh: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +104,20 @@ struct DockerEntry {
     optional: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GithubEntry {
+    #[serde(default = "default_github_host")]
+    host: String,
+    label: Option<String>,
+    #[serde(default)]
+    optional: bool,
+}
+
+fn default_github_host() -> String {
+    "github.com".into()
+}
+
 impl Config {
     /// The checks defined in the file, grouped by kind like on the command line.
     pub fn checks(&self) -> Vec<(Kind, Spec)> {
@@ -138,10 +154,15 @@ impl Config {
             };
             (Kind::Docker, spec)
         });
+        let github = self
+            .github
+            .iter()
+            .map(|e| (Kind::Github, spec(&e.host, &e.label, e.optional)));
         gpg.chain(aws)
             .chain(gcloud)
             .chain(vault)
             .chain(docker)
+            .chain(github)
             .collect()
     }
 }
@@ -229,6 +250,12 @@ registry = "ghcr.io"
 registry = "registry.example.com"
 auth_file = "~/.config/containers/auth.json"
 remote = true
+
+[[github]]
+
+[[github]]
+host = "github.example.com"
+label = "ghe"
 "#;
 
     fn spec(value: &str, label: Option<&str>, addr: Option<&str>) -> Spec {
@@ -304,6 +331,8 @@ remote = true
                         ..spec("registry.example.com", None, None)
                     }
                 ),
+                (Kind::Github, spec("github.com", None, None)),
+                (Kind::Github, spec("github.example.com", Some("ghe"), None)),
             ]
         );
     }
@@ -328,6 +357,7 @@ remote = true
         assert!(
             toml::from_str::<Config>("[[docker]]\nregistry = \"x\"\nremote = \"yes\"").is_err()
         );
+        assert!(toml::from_str::<Config>("[[github]]\nhostname = \"x\"").is_err());
     }
 
     #[test]

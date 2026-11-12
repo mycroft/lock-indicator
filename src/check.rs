@@ -6,7 +6,7 @@ use std::time::Duration;
 use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::spec::Spec;
-use crate::{aws, docker, gcloud, gpg, vault};
+use crate::{aws, docker, gcloud, github, gpg, vault};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -15,15 +15,17 @@ pub enum Kind {
     Gcloud,
     Vault,
     Docker,
+    Github,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::Gpg,
         Kind::Aws,
         Kind::Gcloud,
         Kind::Vault,
         Kind::Docker,
+        Kind::Github,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -33,6 +35,7 @@ impl Kind {
             Kind::Gcloud => "gcloud",
             Kind::Vault => "vault",
             Kind::Docker => "docker",
+            Kind::Github => "github",
         }
     }
 }
@@ -102,8 +105,8 @@ impl Status {
 pub struct Check {
     pub kind: Kind,
     pub label: String,
-    /// What is checked: gpg key, AWS profile, gcloud account, Vault token file
-    /// or Docker registry.
+    /// What is checked: gpg key, AWS profile, gcloud account, Vault token file,
+    /// Docker registry or GitHub host.
     pub target: String,
     /// Vault server address.
     pub addr: Option<String>,
@@ -162,6 +165,7 @@ impl Check {
                 timeout,
                 Utc::now(),
             ),
+            Kind::Github => github::check(&self.target, &programs.gh, timeout),
         }
     }
 }
@@ -173,6 +177,7 @@ pub struct Programs {
     pub gpg_connect_agent: PathBuf,
     pub gcloud: PathBuf,
     pub vault: PathBuf,
+    pub gh: PathBuf,
 }
 
 impl Default for Programs {
@@ -182,6 +187,7 @@ impl Default for Programs {
             gpg_connect_agent: "gpg-connect-agent".into(),
             gcloud: "gcloud".into(),
             vault: "vault".into(),
+            gh: "gh".into(),
         }
     }
 }
