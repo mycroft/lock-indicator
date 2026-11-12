@@ -338,6 +338,19 @@ label = "ghe"
     }
 
     #[test]
+    fn sample_file_is_valid() {
+        let config: Config = toml::from_str(include_str!("../contrib/config.toml")).unwrap();
+        let checks = config.checks();
+        for kind in Kind::ALL {
+            assert!(
+                checks.iter().any(|(k, _)| *k == kind),
+                "no {} check in contrib/config.toml",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn empty_file_is_valid() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.checks().is_empty());

@@ -251,7 +251,10 @@ icons are not, so they can contain markup such as `<span color='red'>`.
 
 Everything above can also be set in a TOML file, by default
 `$XDG_CONFIG_HOME/lock-indicator/config.toml` (`~/.config/lock-indicator/config.toml`).
-Use `-c`/`--config FILE` to read another file instead. All settings are optional:
+Use `-c`/`--config FILE` to read another file instead. All settings are optional.
+[`contrib/config.toml`](contrib/config.toml) is a commented sample to start from.
+
+For example:
 
 ```toml
 format = "waybar"        # text, json or waybar

@@ -1,0 +1,131 @@
+# Sample lock-indicator configuration.
+#
+# Copy it to ~/.config/lock-indicator/config.toml and keep what you need: every
+# setting is optional. Command-line options override this file, and checks given
+# on the command line replace all the checks below.
+
+# text, json or waybar.
+format = "waybar"
+
+# Seconds allowed to each external command and registry verification.
+timeout = 10
+
+# --- Text ----------------------------------------------------------------------
+
+# The whole line. Placeholders: {items}, {kinds}, {icon}, {color}, {state},
+# {unlocked}, {locked}, {unknown}, {total}, and the same for a single kind, such
+# as {aws.color} or {docker.state}.
+text_format = "{kinds}"
+# One icon for everything:
+#   text_format = "{icon}"
+# A count:
+#   text_format = "{icon} {unlocked}/{total}"
+# Your own order and names:
+#   text_format = "aws:<span color='{aws.color}'>●</span> gcp:<span color='{gcloud.color}'>●</span>"
+
+# Replaces text_format when every check, optional ones aside, is unlocked.
+text_format_all_unlocked = "locks: {icon}"
+
+# Each check in {items}. Placeholders: {icon}, {color}, {kind}, {label}, {state},
+# {expires}.
+item_format = "{icon} {kind}:{label}"
+
+# Each kind of check in {kinds}. Placeholders: {kind}, {icon}, {color}, {state},
+# {unlocked}, {locked}, {unknown}, {total}. Markup is for waybar only: with the
+# text format, use e.g. "{icon} {kind}".
+kind_format = "{kind}:<span color='{color}'>●</span>"
+
+# Between the entries of {items} and {kinds}.
+separator = " "
+
+# {icon} of each state. partial: only some checks of a group are unlocked.
+[icons]
+unlocked = "🔓"
+locked = "🔒"
+unknown = "❓"
+partial = "🔐"
+
+# {color} of each state: a Pango color name or a hex code.
+[colors]
+unlocked = "#98c379"
+locked = "#e06c75"
+unknown = "#888888"
+partial = "#d19a66"
+
+# Programs run by the checks: paths (~ is expanded) or names looked up in PATH.
+# Useful when waybar starts with a minimal PATH.
+[programs]
+gpg = "gpg"
+gpg_connect_agent = "gpg-connect-agent"
+gcloud = "gcloud"
+vault = "vault"
+gh = "gh"
+# vault = "~/.nix-profile/bin/vault"
+
+# --- Checks --------------------------------------------------------------------
+#
+# Every kind can be repeated. Each check takes:
+#   label     shown instead of the value
+#   optional  still checked and listed in the tooltip, but left out of the text
+#             and of the overall state
+
+# gpg: the passphrase of the key, or of one of its subkeys, is cached in gpg-agent.
+[[gpg]]
+key = "0xA629E94B9C4B2A03"   # id, fingerprint or user id
+label = "work"
+
+# aws: the token cached by `aws sso login` for the profile has not expired.
+[[aws]]
+profile = "main"
+
+[[aws]]
+profile = "sbx"
+label = "sandbox"
+
+# gcloud: the `gcloud auth login` credentials of the account still work.
+[[gcloud]]
+account = "me@example.com"
+label = "gcp"
+
+[[gcloud]]
+account = "me@gmail.com"
+label = "perso"
+optional = true
+
+# vault: the token in the file is valid and has not expired.
+[[vault]]
+token_file = "~/.vault-token"   # server from $VAULT_ADDR
+
+[[vault]]
+token_file = "~/.vault-tokens/prod"
+addr = "https://vault.example.com:8200"
+label = "prod"
+
+# docker: credentials are stored for the registry and, when they carry an expiry
+# date (Amazon ECR tokens, JWTs), have not expired. The auth file defaults to
+# $DOCKER_CONFIG/config.json, else ~/.docker/config.json.
+[[docker]]
+registry = "123456789012.dkr.ecr.eu-west-3.amazonaws.com"
+label = "ecr"
+
+# Passwords and access tokens have no expiry date: remote verifies them with the
+# registry, which is otherwise never contacted.
+[[docker]]
+registry = "ghcr.io"   # a host, or docker.io for Docker Hub
+remote = true
+
+# Another auth file, such as podman's.
+[[docker]]
+registry = "quay.io"
+auth_file = "~/.config/containers/auth.json"
+optional = true
+
+# github: the `gh auth login` token of the active account of the host still
+# works. gh verifies it with the GitHub API, so a network failure is unknown.
+[[github]]
+host = "github.com"   # the default
+
+[[github]]
+host = "github.example.com"   # GitHub Enterprise Server
+label = "ghe"
+optional = true
